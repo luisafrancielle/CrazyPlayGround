@@ -29,14 +29,12 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.ui import BaseEnvWindow
-from isaaclab.markers import VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from isaaclab.markers import SPHERE_MARKER_CFG  # isort: skip
 from drone import CascadePIDController, load_config
 
 from .trajectories import TRAJECTORIES, apply_traj_transform
@@ -109,7 +107,7 @@ class TrackingEnvCfg(DirectRLEnvCfg):
 
     # --- Scene ---
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
+        num_envs=4096, env_spacing=10.0, replicate_physics=True, clone_in_fabric=True
     )
 
     # --- Robot ---
@@ -232,14 +230,17 @@ class TrackingEnv(DirectRLEnv):
 
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Path visualisation buffers: sample N_PATH_PTS evenly-spaced points per env
-        # (updated at each episode reset, static during the episode).
-        # Cap at _N_VIS_ENVS to avoid creating millions of markers.
-        self._N_PATH_PTS = 300
-        self._N_VIS_ENVS = min(self.num_envs, 32)
-        self._path_pts_buf = torch.zeros(
-            self._N_VIS_ENVS, self._N_PATH_PTS, 3, device=self.device
-        )
+        # Enable the debug-draw extension and acquire the drawing interface.
+        # The extension must be enabled before acquire_debug_draw_interface() works.
+        import omni.kit.app
+        _ext_mgr = omni.kit.app.get_app().get_extension_manager()
+        if not _ext_mgr.is_extension_enabled("isaacsim.util.debug_draw"):
+            _ext_mgr.set_extension_enabled_immediate("isaacsim.util.debug_draw", True)
+        from isaacsim.util.debug_draw import _debug_draw
+        self._draw = _debug_draw.acquire_debug_draw_interface()
+
+        # Flag so we only set the camera once (on the first reset of env 0).
+        self._camera_initialised = False
 
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -560,61 +561,48 @@ class TrackingEnv(DirectRLEnv):
         # Reset PID integrators
         self._ctrl.reset(env_ids)
 
-        # Update path buffer for any vis env that just reset.
-        vis_env_ids = env_ids[env_ids < self._N_VIS_ENVS]
-        if len(vis_env_ids) > 0 and self.cfg.debug_vis:
-            # step_size chosen so N_PATH_PTS covers ~1.5 full periods regardless of speed.
-            # With step_size=2, dt=0.01: advance = 2*N_PATH_PTS*0.01 = 6 rad ≈ 1 period.
-            new_pts = self._compute_traj(
-                steps=self._N_PATH_PTS, env_ids=vis_env_ids, step_size=2.0
-            )  # [len(vis_env_ids), N_PATH_PTS, 3]
-            self._path_pts_buf[vis_env_ids] = new_pts
-            if hasattr(self, "path_visualizer"):
-                flat = self._path_pts_buf.reshape(-1, 3)  # [N_VIS_ENVS * N_PATH_PTS, 3]
-                self.path_visualizer.visualize(flat)
+        # Redraw trajectory lines for env 0 whenever it resets.
+        if self.cfg.debug_vis and (0 in env_ids.tolist()):
+            self._draw_env0_traj()
+            if not self._camera_initialised:
+                self._init_camera_env0()
+                self._camera_initialised = True
 
     # -----------------------------------------------------------------------
-    # Debug visualisation  — same pattern as OmniDrones Track
+    # Trajectory line drawing (debug_draw) — env 0 only
+    # -----------------------------------------------------------------------
+
+    def _draw_env0_traj(self):
+        """Draw the full trajectory for env 0 as white lines."""
+        env0 = torch.tensor([0], device=self.device)
+        # 800 steps at step_size=1 → ~8 rad ≈ 1.3 full periods (one complete loop visible).
+        n_pts = 800
+        traj_vis = self._compute_traj(steps=n_pts, env_ids=env0, step_size=1.0)[0]  # [n_pts, 3]
+        pts = [tuple(p) for p in traj_vis.cpu().tolist()]
+        p0 = pts[:-1]
+        p1 = pts[1:]
+        n = len(p0)
+        self._draw.clear_lines()
+        self._draw.draw_lines(p0, p1, [(1.0, 1.0, 1.0, 1.0)] * n, [2.0] * n)
+
+    def _init_camera_env0(self):
+        """Point the default perspective camera at env 0's trajectory centre."""
+        import numpy as np
+        from isaacsim.core.utils.viewports import set_camera_view
+
+        origin = self._terrain.env_origins[0].cpu().numpy()
+        traj_c = origin + np.array(self.cfg.traj_origin, dtype=np.float32)
+        eye    = traj_c + np.array([6.0, -6.0, 5.0], dtype=np.float32)
+        set_camera_view(eye=eye, target=traj_c)
+
+    # -----------------------------------------------------------------------
+    # Debug visualisation hooks (required by DirectRLEnv interface)
     # -----------------------------------------------------------------------
 
     def _set_debug_vis_impl(self, debug_vis: bool):
-        if debug_vis:
-            # --- Trajectory path: many small yellow spheres per env ---
-            if not hasattr(self, "path_visualizer"):
-                path_cfg = SPHERE_MARKER_CFG.copy()
-                path_cfg.markers["sphere"] = sim_utils.SphereCfg(
-                    radius=0.025,
-                    visual_material=sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=(0.9, 0.9, 0.1)  # yellow
-                    ),
-                )
-                path_cfg.prim_path = "/Visuals/Track/path"
-                self.path_visualizer = VisualizationMarkers(path_cfg)
-            self.path_visualizer.set_visibility(True)
-
-            # --- Current waypoint: red sphere (one per env) ---
-            if not hasattr(self, "target_visualizer"):
-                target_cfg = SPHERE_MARKER_CFG.copy()
-                target_cfg.markers["sphere"] = sim_utils.SphereCfg(
-                    radius=0.06,
-                    visual_material=sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=(1.0, 0.1, 0.1)  # red
-                    ),
-                )
-                target_cfg.prim_path = "/Visuals/Track/target"
-                self.target_visualizer = VisualizationMarkers(target_cfg)
-            self.target_visualizer.set_visibility(True)
-        else:
-            if hasattr(self, "path_visualizer"):
-                self.path_visualizer.set_visibility(False)
-            if hasattr(self, "target_visualizer"):
-                self.target_visualizer.set_visibility(False)
+        if not debug_vis:
+            self._draw.clear_lines()
 
     def _debug_vis_callback(self, event):
-        # Move the red sphere to the current waypoint each step (all envs).
-        all_env_ids = torch.arange(self.num_envs, device=self.device)
-        current_wp = self._compute_traj(
-            steps=1, env_ids=all_env_ids, step_size=self.cfg.traj_step_size
-        )[:, 0, :]
-        self.target_visualizer.visualize(current_wp)
-        # Path spheres are static per episode — updated only in _reset_idx.
+        # Lines are redrawn at reset — nothing to do every frame.
+        pass
