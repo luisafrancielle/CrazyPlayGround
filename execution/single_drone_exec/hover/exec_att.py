@@ -163,7 +163,7 @@ class CrazyflieController:
                 pass
 
     def control_loop(self):
-        """Main control loop: send attitude commands"""
+        """Main control loop: position-controlled takeoff, then NN attitude control"""
         INTERVAL = 0.01  # control frequency (s) - 100 Hz
         MAX_ANGLE = 30.0          # degrees  — must match att_hovering.py max_roll_pitch
         MAX_YAW_RATE = 90.0       # deg/s    — must match att_hovering.py max_yaw_rate
@@ -174,28 +174,32 @@ class CrazyflieController:
         MIN_THRUST_SCALE = 0.5    # fraction of hover — must match att_hovering.py
         MAX_THRUST_SCALE = 1.8    # fraction of hover — must match att_hovering.py
 
+        TAKEOFF_HEIGHT   = 0.5   # metres — hover height before NN takes over
+        TAKEOFF_DURATION = 2.5   # seconds for the HLC to reach the height
+        STABILIZE_PAUSE  = 1.5   # extra seconds to let oscillations settle
+
         logger.info("Waiting for position data...")
         while not self.position_received and self.running:
             time.sleep(0.1)
         logger.info(f"Position received: {self.current_pos}")
 
-        logger.info("Unlocking motors with thrust=0...")
-        for _ in range(10):
-            self.cf.commander.send_setpoint(0, 0, 0, 0)
-            time.sleep(0.01)
-        logger.info("Motors unlocked")
-
-        TAKEOFF_THRUST = int(HOVER_THRUST * 1.2)
-        TAKEOFF_DURATION = 2.0
-        logger.info(f"Manual takeoff with thrust={TAKEOFF_THRUST} for {TAKEOFF_DURATION}s...")
-        takeoff_start = time.time()
-        while time.time() - takeoff_start < TAKEOFF_DURATION and self.running:
-            self.cf.commander.send_setpoint(0, 0, 0, TAKEOFF_THRUST)
-            time.sleep(INTERVAL)
-            logger.info(f"Takeoff: thrust={TAKEOFF_THRUST}, pos={self.current_pos}")
-        logger.info(f"Takeoff complete, current pos: {self.current_pos}")
+        # ── Phase 1: position-controlled takeoff ─────────────────────────────
+        logger.info(f"Takeoff via high_level_commander to {TAKEOFF_HEIGHT} m ...")
+        self.cf.high_level_commander.takeoff(TAKEOFF_HEIGHT, TAKEOFF_DURATION)
+        time.sleep(TAKEOFF_DURATION + STABILIZE_PAUSE)
+        logger.info(f"Takeoff complete. Current pos: {self.current_pos}")
         logger.info(f"Init target pos={target_pos}")
 
+        # ── Transition: hand off to low-level attitude commander ─────────────
+        # Sending send_setpoint() switches the firmware away from HLC mode.
+        # Keep roll/pitch/yaw at zero and thrust at hover for a smooth handoff.
+        logger.info("Transitioning to attitude control (hover handoff)...")
+        for _ in range(20):
+            self.cf.commander.send_setpoint(0, 0, 0, HOVER_THRUST)
+            time.sleep(INTERVAL)
+
+        # ── Phase 2: NN attitude control loop ────────────────────────────────
+        logger.info("NN attitude control active.")
         while self.cf.is_connected() and self.running:
             start_time = time.time()
 
@@ -216,11 +220,13 @@ class CrazyflieController:
             obs = retrieve_and_create_observation(self.previous_pos, self.current_pos, self.current_quat, INTERVAL)
             if obs is None:
                 logger.warning("No observation received, hovering...")
+                self.cf.commander.send_setpoint(0, 0, 0, HOVER_THRUST)
                 time.sleep(INTERVAL)
                 continue
 
             with torch.no_grad():
-                action = torch.zeros(4, device=device)
+                action_dict = self.agent.act(obs, 1, 0)
+                action = action_dict[0]
                 logger.debug(f"Action={action}")
 
             roll  = action[0].item() * MAX_ANGLE
