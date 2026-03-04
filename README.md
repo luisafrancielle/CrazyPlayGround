@@ -10,7 +10,7 @@
 
 # CrazyPlayGround - Collection of CrazyFlie Environments 
 
-A collection of Crazyflie 2.1 reinforcement learning environments built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab), using a cascaded PID inner-loop controller from [DroneModule](https://github.com/JulienHansen/DroneModule).
+A collection of Crazyflie 2.1 reinforcement learning environments built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab), using a PID inner-loop controller from [DroneModule](https://github.com/JulienHansen/DroneModule).
 
 ---
 
