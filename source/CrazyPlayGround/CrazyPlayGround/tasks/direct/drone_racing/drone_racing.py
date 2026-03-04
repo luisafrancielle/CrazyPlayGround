@@ -27,11 +27,12 @@ Observation (20-D):
 
 Reward:
   r_progress  = (prev_dist - curr_dist) * progress_scale   [approach reward]
-  r_gate_pass = gate_pass_reward  when a gate is correctly crossed
-  r_up        = 0.3 * ((up_z + 1) / 2)^2                  [uprightness]
-  r_spin      = 0.1 / (1 + omega_z^2)                      [anti yaw-spin]
+  r_speed     = speed_bonus_scale * vel_toward_gate         [velocity toward gate]
+  r_gate_pass = gate_pass_reward * (1 + exp(-steps/200))    [time-decaying gate bonus]
+  r_up        = 0.15 * ((up_z + 1) / 2)^2                  [uprightness]
+  r_spin      = 0.05 / (1 + omega_z^2)                     [anti yaw-spin]
   r_effort    = -effort_weight * mean(actions^2)
-  total       = r_progress + r_gate_pass + (r_progress + 0.2) * (r_up + r_spin) + r_effort
+  total       = r_progress + r_gate_pass + r_speed + (r_progress + 0.2) * (r_up + r_spin) + r_effort
   [crash]     = crash_penalty  (overrides all other terms)
 
 Gate crossing criterion:
@@ -112,6 +113,17 @@ _GATE_WORLD_POS: list[tuple[float, float, float]] = [
 _NUM_GATES: int = len(_GATE_WORLD_POS)
 _GATE_RADIUS: float = 1.0   # [m] crossing-detection radius
 
+# The gate USD mesh has its origin at the bottom of the frame; the centre of
+# the gate opening sits ~1.067 m above that origin (from the mesh's local
+# Z-translation).  All navigation / visualisation logic should target the
+# centre, not the bottom.
+_GATE_CENTER_Z_OFFSET: float = 1.067
+
+# Gate centre positions (used for navigation, rewards, visualisation)
+_GATE_CENTER_POS: list[tuple[float, float, float]] = [
+    (x, y, z + _GATE_CENTER_Z_OFFSET) for x, y, z in _GATE_WORLD_POS
+]
+
 # Gate normals = direction of travel at each gate
 # = unit vector from gate[i] → gate[(i+1) % N]
 def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
@@ -126,7 +138,7 @@ def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
     return normals
 
 
-_GATE_NORMALS: list[tuple[float, float, float]] = _build_normals(_GATE_WORLD_POS)
+_GATE_NORMALS: list[tuple[float, float, float]] = _build_normals(_GATE_CENTER_POS)
 
 # Gate yaw angles (XY-plane direction of travel) used to orient USD meshes and
 # to align the drone's heading on spawn.
@@ -162,8 +174,9 @@ class DroneRacingEnvCfg(DirectRLEnvCfg):
     gate_radius: float = _GATE_RADIUS
 
     # Reward weights
-    progress_scale: float = 3.0
-    gate_pass_reward: float = 5.0
+    progress_scale: float = 5.0
+    gate_pass_reward: float = 10.0
+    speed_bonus_scale: float = 0.5      # reward for velocity toward the gate
     effort_weight: float = 0.001
     crash_penalty: float = -5.0
 
@@ -256,8 +269,13 @@ class DroneRacingEnv(DirectRLEnv):
             self._thrust_pwm = torch.zeros(self.num_envs, 1, device=self.device)
 
         # Gate geometry tensors — fixed world positions, same for all envs
+        # _gate_world_pos = bottom of gate USD (used for spawning only)
         self._gate_world_pos = torch.tensor(
             _GATE_WORLD_POS, dtype=torch.float32, device=self.device
+        )  # [G, 3]
+        # _gate_center_pos = centre of gate opening (used for navigation / viz)
+        self._gate_center_pos = torch.tensor(
+            _GATE_CENTER_POS, dtype=torch.float32, device=self.device
         )  # [G, 3]
         self._gate_world_normal = torch.tensor(
             _GATE_NORMALS, dtype=torch.float32, device=self.device
@@ -267,6 +285,7 @@ class DroneRacingEnv(DirectRLEnv):
         self._gate_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_signed = torch.zeros(self.num_envs, device=self.device)
         self._prev_dist = torch.zeros(self.num_envs, device=self.device)
+        self._steps_since_gate = torch.zeros(self.num_envs, device=self.device)
 
         # Episode logging
         self._episode_sums = {
@@ -368,9 +387,9 @@ class DroneRacingEnv(DirectRLEnv):
         lin_vel_b = self._robot.data.root_lin_vel_b   # [E, 3]
         ang_vel_b = self._robot.data.root_ang_vel_b   # [E, 3]
 
-        # Shared world-frame gate positions (same for every env)
-        curr_gate_w = self._gate_world_pos[self._gate_idx]                      # [E, 3]
-        next_gate_w = self._gate_world_pos[(self._gate_idx + 1) % _NUM_GATES]  # [E, 3]
+        # Shared world-frame gate centre positions (same for every env)
+        curr_gate_w = self._gate_center_pos[self._gate_idx]                      # [E, 3]
+        next_gate_w = self._gate_center_pos[(self._gate_idx + 1) % _NUM_GATES]  # [E, 3]
 
         # Gate positions expressed in the drone's body frame
         curr_gate_b, _ = subtract_frame_transforms(pos_w, quat_w, curr_gate_w)  # [E, 3]
@@ -393,7 +412,7 @@ class DroneRacingEnv(DirectRLEnv):
         pos_w = self._robot.data.root_pos_w  # [E, 3]
 
         # ── Gate crossing detection ──────────────────────────────────────────
-        curr_gate_w = self._gate_world_pos[self._gate_idx]           # [E, 3]
+        curr_gate_w = self._gate_center_pos[self._gate_idx]          # [E, 3]
         gate_normal = self._gate_world_normal[self._gate_idx]        # [E, 3]
 
         diff   = pos_w - curr_gate_w
@@ -415,10 +434,11 @@ class DroneRacingEnv(DirectRLEnv):
         if crossed.any():
             self._gate_idx[crossed] = (self._gate_idx[crossed] + 1) % _NUM_GATES
             self._episode_sums["gates_passed"][crossed] += 1.0
+            self._steps_since_gate[crossed] = 0.0
 
         # Recompute signed distance for the (possibly updated) current gate so
         # that next step's detection is always relative to the correct target.
-        new_gate_w  = self._gate_world_pos[self._gate_idx]
+        new_gate_w  = self._gate_center_pos[self._gate_idx]
         new_normal  = self._gate_world_normal[self._gate_idx]
         new_diff    = pos_w - new_gate_w
         new_signed  = torch.sum(new_diff * new_normal, dim=-1)
@@ -430,22 +450,33 @@ class DroneRacingEnv(DirectRLEnv):
         self._prev_dist = curr_dist.detach().clone()
         self._episode_sums["progress"] += r_progress.clamp(min=0.0)
 
-        # ── Gate pass bonus ──────────────────────────────────────────────────
-        r_gate_pass = crossed.float() * self.cfg.gate_pass_reward
+        # ── Speed bonus: reward velocity component toward the current gate ──
+        lin_vel_w = self._robot.data.root_lin_vel_w                    # [E, 3]
+        to_gate   = new_diff / (curr_dist.unsqueeze(-1) + 1e-6)       # unit vec drone→gate
+        # Negative because new_diff = pos - gate, so toward gate = -to_gate
+        speed_toward = torch.sum(lin_vel_w * (-to_gate), dim=-1).clamp(min=0.0)
+        r_speed = self.cfg.speed_bonus_scale * speed_toward
+
+        # ── Gate pass bonus (time-decaying: faster crossing = higher reward) ─
+        # Base reward + bonus that decays with steps since last gate crossing.
+        # At 0 steps the bonus is 1x base, decaying to 0 over ~200 steps.
+        self._steps_since_gate += 1.0
+        time_bonus = torch.exp(-self._steps_since_gate / 200.0)
+        r_gate_pass = crossed.float() * self.cfg.gate_pass_reward * (1.0 + time_bonus)
 
         # ── Uprightness ──────────────────────────────────────────────────────
         quat = self._robot.data.root_quat_w
         up_z = 1.0 - 2.0 * (quat[:, 1].pow(2) + quat[:, 2].pow(2))
-        r_up = 0.3 * ((up_z + 1.0) / 2.0).pow(2)
+        r_up = 0.15 * ((up_z + 1.0) / 2.0).pow(2)
 
         # ── Anti yaw-spin ────────────────────────────────────────────────────
         omega_z = self._robot.data.root_ang_vel_b[:, 2]
-        r_spin  = 0.1 / (1.0 + omega_z.pow(2))
+        r_spin  = 0.05 / (1.0 + omega_z.pow(2))
 
         # ── Effort penalty ───────────────────────────────────────────────────
         r_effort = -self.cfg.effort_weight * self._actions.pow(2).mean(dim=-1)
 
-        total = r_progress + r_gate_pass + (r_progress + 0.2) * (r_up + r_spin) + r_effort
+        total = r_progress + r_gate_pass + r_speed + (r_progress + 0.2) * (r_up + r_spin) + r_effort
 
         # ── Crash override ───────────────────────────────────────────────────
         crash = (
@@ -505,7 +536,7 @@ class DroneRacingEnv(DirectRLEnv):
         # Each drone spawns 2.5 m behind a random gate, facing it.
         # This gives diverse start states and avoids overlapping with gate meshes.
         gate_start = torch.randint(0, _NUM_GATES, (M,), device=self.device)  # [M]
-        gate_pos   = self._gate_world_pos[gate_start]     # [M, 3]
+        gate_pos   = self._gate_center_pos[gate_start]     # [M, 3]
         gate_norm  = self._gate_world_normal[gate_start]  # [M, 3]
 
         # 3.0 m behind = opposite direction of the normal.
@@ -541,6 +572,7 @@ class DroneRacingEnv(DirectRLEnv):
         diff0 = spawn_pos_w - gate_pos
         self._prev_signed[env_ids] = (diff0 * gate_norm).sum(dim=-1)
         self._prev_dist[env_ids]   = diff0.norm(dim=-1)
+        self._steps_since_gate[env_ids] = 0.0
 
         # ── Debug visualisation ──────────────────────────────────────────────
         if self.cfg.debug_vis and (env_ids == 0).any().item():
@@ -554,9 +586,9 @@ class DroneRacingEnv(DirectRLEnv):
     # -----------------------------------------------------------------------
 
     def _draw_track(self):
-        """Draw the track circuit as green lines between consecutive gates."""
+        """Draw the track circuit as green lines between consecutive gate centres."""
         self._draw.clear_lines()
-        points = [self._gate_world_pos[g].cpu().tolist() for g in range(_NUM_GATES)]
+        points = [self._gate_center_pos[g].cpu().tolist() for g in range(_NUM_GATES)]
         green  = (0.0, 1.0, 0.0, 1.0)
         starts = points
         ends   = points[1:] + [points[0]]
