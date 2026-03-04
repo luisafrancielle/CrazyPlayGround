@@ -109,17 +109,20 @@ def build_observation(step: int, pos: torch.Tensor, vel_w: torch.Tensor,
 # ── Model definition ───────────────────────────────────────────────────────────
 
 class Policy(GaussianMixin, Model):
+    """Must match the skrl_ppo_cfg.yaml network: [256, 128, 64] with ELU."""
+
     def __init__(self, observation_space, action_space, device,
                  clip_actions=False, clip_log_std=True,
                  min_log_std=-20.0, max_log_std=2.0, initial_log_std=0.0):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         self.net_container = nn.Sequential(
-            nn.Linear(self.num_observations, 32), nn.ELU(),
-            nn.Linear(32, 32), nn.ELU()
+            nn.Linear(self.num_observations, 256), nn.ELU(),
+            nn.Linear(256, 128), nn.ELU(),
+            nn.Linear(128, 64), nn.ELU(),
         )
-        self.policy_layer = nn.Linear(32, self.num_actions)
-        self.value_layer  = nn.Linear(32, 1)
+        self.policy_layer = nn.Linear(64, self.num_actions)
+        self.value_layer  = nn.Linear(64, 1)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions) * initial_log_std)
 
     def compute(self, inputs, role):

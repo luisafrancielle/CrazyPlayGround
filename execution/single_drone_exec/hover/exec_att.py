@@ -191,10 +191,12 @@ class CrazyflieController:
         logger.info(f"Init target pos={target_pos}")
 
         # ── Transition: hand off to low-level attitude commander ─────────────
-        # Sending send_setpoint() switches the firmware away from HLC mode.
-        # Keep roll/pitch/yaw at zero and thrust at hover for a smooth handoff.
+        # Stop the high-level commander so it no longer overrides low-level setpoints,
+        # then send hover setpoints to establish low-level control smoothly.
         logger.info("Transitioning to attitude control (hover handoff)...")
-        for _ in range(20):
+        self.cf.high_level_commander.stop()
+        time.sleep(0.05)
+        for _ in range(50):
             self.cf.commander.send_setpoint(0, 0, 0, HOVER_THRUST)
             time.sleep(INTERVAL)
 

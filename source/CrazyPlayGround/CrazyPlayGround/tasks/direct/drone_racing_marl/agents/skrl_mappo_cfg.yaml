@@ -4,7 +4,7 @@ seed: 42
 # Models are instantiated using skrl's model instantiator utility
 # https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
 models:
-  separate: False
+  separate: True
   policy:  # see gaussian_model parameters
     class: GaussianMixin
     clip_actions: False
@@ -15,16 +15,16 @@ models:
     network:
       - name: net
         input: OBSERVATIONS
-        layers: [32, 32]
+        layers: [256, 256, 128]
         activations: elu
     output: ACTIONS
-  value:  # see deterministic_model parameters
+  value:  # centralised critic — input is the global state (28-D)
     class: DeterministicMixin
     clip_actions: False
     network:
       - name: net
-        input: OBSERVATIONS
-        layers: [32, 32]
+        input: STATES
+        layers: [256, 256, 128]
         activations: elu
     output: ONE
 
@@ -36,21 +36,26 @@ memory:
   memory_size: -1  # automatically determined (same as agent:rollouts)
 
 
-# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
-# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
+# MAPPO agent configuration (field names are from MAPPO_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/multi_agents/mappo.html
+# Tuned for sparse competitive rewards: longer rollouts, higher discount,
+# more entropy to encourage exploration of overtaking/blocking strategies.
+# Centralised critic uses STATES (28-D global state).
 agent:
-  class: PPO
-  rollouts: 32
+  class: MAPPO
+  rollouts: 64
   learning_epochs: 8
   mini_batches: 8
-  discount_factor: 0.99
+  discount_factor: 0.995
   lambda: 0.95
-  learning_rate: 5.0e-04
+  learning_rate: 3.0e-04
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.008
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
+  shared_state_preprocessor: RunningStandardScaler
+  shared_state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
   value_preprocessor_kwargs: null
   random_timesteps: 0
@@ -59,14 +64,14 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.0
+  entropy_loss_scale: 0.01
   value_loss_scale: 2.0
   kl_threshold: 0.0
-  rewards_shaper_scale: 0.1
+  rewards_shaper_scale: 1.0
   time_limit_bootstrap: False
   # logging and checkpoint
   experiment:
-    directory: "cartpole_direct"
+    directory: "crazyflie_racing_marl"
     experiment_name: ""
     write_interval: auto
     checkpoint_interval: auto
@@ -76,5 +81,5 @@ agent:
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 4800
+  timesteps: 2000000
   environment_info: log
