@@ -12,6 +12,9 @@
 
 A collection of Crazyflie reinforcement learning environments built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab), using a self-contained cascaded PID inner-loop controller.
 
+⚠️ This repository is still under construction. If you find a bug, a mistake, or a problem, do not hesitate to open an issue! ⚠️
+
+
 ---
 
 ## Overview
@@ -189,3 +192,8 @@ controllers:
     att_kp:  [6.0, 6.0, 6.0]
     rate_kp: [250.0, 250.0, 120.0]
 ```
+
+
+
+
+
