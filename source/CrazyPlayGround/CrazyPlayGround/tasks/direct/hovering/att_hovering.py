@@ -40,14 +40,11 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
-# Path to the Crazyflie config bundled with DroneModule.
-# Adjust if the project layout changes.
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
-
 
 class QuadcopterEnvWindow(BaseEnvWindow):
     """Window manager for the Quadcopter environment."""
@@ -59,31 +56,25 @@ class QuadcopterEnvWindow(BaseEnvWindow):
                 with self.ui_window_elements["debug_vstack"]:
                     self._create_debug_vis_ui_element("targets", self.env)
 
-
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 5
 
-    # ACTION SPACE: [roll_ref, pitch_ref, yaw_rate_ref, thrust_normalized]
     action_space = 4
     observation_space = 6
     state_space = 0
     debug_vis = True
 
-    # Attitude limits
     max_roll_pitch = 30.0 * math.pi / 180.0   # 30 deg max tilt
     max_yaw_rate   = 90.0 * math.pi / 180.0   # 90 deg/s max yaw rate
-    # Thrust is normalized [0, 1] and mapped to [min_thrust, max_thrust]
     min_thrust_scale = 0.5   # fraction of hover thrust
     max_thrust_scale = 1.8   # fraction of hover thrust
 
     ui_window_class_type = QuadcopterEnvWindow
 
-    # Path to the DroneModule YAML config used to build CrazyfliePIDController.
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
 
-    # simulation — same as pos_hovering
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 500,
         render_interval=decimation,
@@ -109,12 +100,10 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    # scene — same as pos_hovering
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
     )
 
-    # robot — same reward scales as pos_hovering
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     lin_vel_reward_scale = -0.1
     ang_vel_reward_scale = -0.05
@@ -122,7 +111,6 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     add_noise = False
     noise_std = 0.01
-
 
 class QuadcopterEnv(DirectRLEnv):
     cfg: QuadcopterEnvCfg
@@ -135,7 +123,6 @@ class QuadcopterEnv(DirectRLEnv):
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # Logging
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
@@ -144,13 +131,8 @@ class QuadcopterEnv(DirectRLEnv):
                 "distance_to_goal",
             ]
         }
-        # Get specific body indices
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Build the cascade PID controller from DroneModule.
-        # At command_level="attitude" the position and velocity loops are bypassed;
-        # the agent's roll/pitch references and yaw rate feed directly into the
-        # attitude angle → rate cascade.
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrl = CascadePIDController.from_drone_config(
             drone_cfg,
@@ -159,7 +141,6 @@ class QuadcopterEnv(DirectRLEnv):
             device=self.device,
         )
 
-        # Thrust limits derived from the config mass (hover thrust ≈ mass × g).
         self._hover_thrust = drone_cfg.physics.mass * 9.81
         self._min_thrust = self.cfg.min_thrust_scale * self._hover_thrust
         self._max_thrust = self.cfg.max_thrust_scale * self._hover_thrust
@@ -187,14 +168,11 @@ class QuadcopterEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
-        # Store attitude/thrust setpoints; PID runs at physics rate in _apply_action
         roll_ref  = self._actions[:, 0] * self.cfg.max_roll_pitch
         pitch_ref = self._actions[:, 1] * self.cfg.max_roll_pitch
         self._att_ref = torch.stack([roll_ref, pitch_ref, torch.zeros_like(roll_ref)], dim=-1)
         self._yaw_rate_ref = (self._actions[:, 2] * self.cfg.max_yaw_rate).unsqueeze(-1)
 
-        # Thrust: action[3] in [0, 1] — 0 = min thrust (falls), 1 = max thrust.
-        # Centre (0.556 ≈ 1/1.8) corresponds to hover, matching teleop_env.py convention.
         thrust_normalized = self._actions[:, 3].clamp(0.0, 1.0)
         thrust_ref_n = self._min_thrust + thrust_normalized * (self._max_thrust - self._min_thrust)
         self._thrust_pwm = (thrust_ref_n / self._ctrl.thrust_cmd_scale).unsqueeze(-1)
@@ -224,7 +202,6 @@ class QuadcopterEnv(DirectRLEnv):
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
     def _get_observations(self) -> dict:
-        # Same observations as pos/vel_hovering: lin_vel_b + desired_pos_b
         desired_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_pos_w,
             self._robot.data.root_quat_w,
@@ -256,7 +233,6 @@ class QuadcopterEnv(DirectRLEnv):
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # Logging
         for key, value in rewards.items():
             self._episode_sums[key] += value
         return reward
@@ -270,7 +246,6 @@ class QuadcopterEnv(DirectRLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
-        # Logging — same as pos/vel_hovering
         final_distance_to_goal = torch.linalg.norm(
             self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
         ).mean()
@@ -293,11 +268,9 @@ class QuadcopterEnv(DirectRLEnv):
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         self._actions[env_ids] = 0.0
-        # Sample new commands — same as pos/vel_hovering
         self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-1, 1)
         self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-        # Reset robot state — same as pos/vel_hovering
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
@@ -309,9 +282,6 @@ class QuadcopterEnv(DirectRLEnv):
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # Reset all PID integrators for the affected environments.
-        # This also clears the yaw setpoint (set to NaN → re-initialised to
-        # actual yaw on the first call after reset).
         self._ctrl.reset(env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):

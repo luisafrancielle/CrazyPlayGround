@@ -54,31 +54,17 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_from_euler_xyz, subtract_frame_transforms
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from drone import CascadePIDController, load_config
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
-
-# ---------------------------------------------------------------------------
-# Gate geometry constants (env-local frame)
-# ---------------------------------------------------------------------------
 
 _GATE_X: float = 0.0   # gate plane x-coordinate in env frame
 _GATE_Z: float = 2.0   # gate centre height in env frame
 
-# Observation dimensions
 _OBS_DIM_BASE = 16   # quat(4) + lin_vel_b(3) + ang_vel_b(3) + target_rpos_b(3) + gate_rpos_b(3)
 _TIME_ENC_DIM = 4
-
-# ---------------------------------------------------------------------------
-# Configs
-# ---------------------------------------------------------------------------
-
 
 @configclass
 class FlyThroughEnvCfg(DirectRLEnvCfg):
@@ -88,20 +74,15 @@ class FlyThroughEnvCfg(DirectRLEnvCfg):
     decimation: int = 5
     debug_vis: bool = True
 
-    # Observation
     time_encoding: bool = True
 
-    # Gate geometry
     gate_moving_range: float = 1.0  # max Y offset of gate from env origin [m]
     gate_half_width: float = 0.6    # gate opening half-width  in Y [m]
     gate_half_height: float = 0.5   # gate opening half-height in Z [m]
 
-    # Reward
     reward_distance_scale: float = 1.0
     reward_effort_weight: float = 0.05
 
-    # Control (overridden by sub-configs, but defined here so the class always
-    # has access to all fields regardless of which sub-config is used)
     control_mode: str = "velocity"
     max_velocity: float = 3.0                         # velocity mode [m/s]
     max_roll_pitch: float = 30.0 * math.pi / 180.0   # attitude mode [rad]
@@ -129,7 +110,6 @@ class FlyThroughEnvCfg(DirectRLEnvCfg):
 
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
 
-
 @configclass
 class VelFlyThroughEnvCfg(FlyThroughEnvCfg):
     """Velocity-controlled fly-through.  Action = [Vx, Vy, Vz] normalised to [-1, 1]."""
@@ -137,7 +117,6 @@ class VelFlyThroughEnvCfg(FlyThroughEnvCfg):
     action_space: int = 3
     observation_space: int = _OBS_DIM_BASE + _TIME_ENC_DIM  # 20
     control_mode: str = "velocity"
-
 
 @configclass
 class AttFlyThroughEnvCfg(FlyThroughEnvCfg):
@@ -147,12 +126,6 @@ class AttFlyThroughEnvCfg(FlyThroughEnvCfg):
     observation_space: int = _OBS_DIM_BASE + _TIME_ENC_DIM  # 20
     control_mode: str = "attitude"
 
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
-
 class FlyThroughEnv(DirectRLEnv):
     cfg: FlyThroughEnvCfg
 
@@ -161,7 +134,6 @@ class FlyThroughEnv(DirectRLEnv):
 
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Cascade PID controller
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrl = CascadePIDController.from_drone_config(
             drone_cfg,
@@ -170,17 +142,14 @@ class FlyThroughEnv(DirectRLEnv):
             device=self.device,
         )
 
-        # Thrust limits (needed for attitude mode; harmless for velocity mode)
         hover_thrust = drone_cfg.physics.mass * 9.81
         self._min_thrust = self.cfg.min_thrust_scale * hover_thrust
         self._max_thrust = self.cfg.max_thrust_scale * hover_thrust
 
-        # Action and force buffers
         self._actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._thrust_buf = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment_buf = torch.zeros(self.num_envs, 1, 3, device=self.device)
 
-        # Mode-specific setpoint buffers
         if self.cfg.control_mode == "velocity":
             self._ref_vel = torch.zeros(self.num_envs, 3, device=self.device)
         else:  # attitude
@@ -188,20 +157,16 @@ class FlyThroughEnv(DirectRLEnv):
             self._yaw_rate_ref = torch.zeros(self.num_envs, 1, device=self.device)
             self._thrust_pwm = torch.zeros(self.num_envs, 1, device=self.device)
 
-        # Gate and target world-frame positions  [E, 3]
         self._gate_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._target_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # Whether each env has already crossed the gate plane (one-shot)
         self._crossed_plane = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        # Episode logging sums
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in ["pos_error", "gate_yz_dist", "success"]
         }
 
-        # Debug-draw interface
         import omni.kit.app
         _ext_mgr = omni.kit.app.get_app().get_extension_manager()
         if not _ext_mgr.is_extension_enabled("isaacsim.util.debug_draw"):
@@ -209,10 +174,6 @@ class FlyThroughEnv(DirectRLEnv):
         from isaacsim.util.debug_draw import _debug_draw
         self._draw = _debug_draw.acquire_debug_draw_interface()
         self._camera_initialised = False
-
-    # -----------------------------------------------------------------------
-    # Scene setup
-    # -----------------------------------------------------------------------
 
     def _setup_scene(self):
         self._robot = Articulation(CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot"))
@@ -227,10 +188,6 @@ class FlyThroughEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    # -----------------------------------------------------------------------
-    # Physics step
-    # -----------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._actions = actions.clone().clamp(-1.0, 1.0)
@@ -281,17 +238,12 @@ class FlyThroughEnv(DirectRLEnv):
             self._thrust_buf, self._moment_buf, body_ids=self._body_id
         )
 
-    # -----------------------------------------------------------------------
-    # Observations
-    # -----------------------------------------------------------------------
-
     def _get_observations(self) -> dict:
         pos_w     = self._robot.data.root_pos_w       # [E, 3]
         quat_w    = self._robot.data.root_quat_w      # [E, 4]  [w, x, y, z]
         lin_vel_b = self._robot.data.root_lin_vel_b   # [E, 3]
         ang_vel_b = self._robot.data.root_ang_vel_b   # [E, 3]
 
-        # Target and gate positions in drone body frame
         target_rpos_b, _ = subtract_frame_transforms(pos_w, quat_w, self._target_pos_w)  # [E, 3]
         gate_rpos_b,   _ = subtract_frame_transforms(pos_w, quat_w, self._gate_pos_w)    # [E, 3]
 
@@ -303,7 +255,6 @@ class FlyThroughEnv(DirectRLEnv):
 
         obs = torch.cat(obs_parts, dim=-1)  # [E, obs_dim]
 
-        # Running episode statistics
         dist_to_target = (self._target_pos_w - pos_w).norm(dim=-1)
         gate_yz_dist   = (pos_w[:, 1:] - self._gate_pos_w[:, 1:]).norm(dim=-1)
         self._episode_sums["pos_error"]    += dist_to_target
@@ -311,24 +262,16 @@ class FlyThroughEnv(DirectRLEnv):
 
         return {"policy": obs}
 
-    # -----------------------------------------------------------------------
-    # Rewards
-    # -----------------------------------------------------------------------
-
     def _get_rewards(self) -> torch.Tensor:
         pos_w = self._robot.data.root_pos_w  # [E, 3]
 
-        # --- Target distance ---
         dist_to_target = (self._target_pos_w - pos_w).norm(dim=-1)   # [E]
         r_pos = torch.exp(-self.cfg.reward_distance_scale * dist_to_target)
 
-        # --- Gate centering reward ---
-        # Signed distance to gate plane (positive = drone still before gate)
         dist_to_gate_plane = self._gate_pos_w[:, 0] - pos_w[:, 0]    # [E]
         dist_gate_y = (pos_w[:, 1] - self._gate_pos_w[:, 1]).abs()    # [E]
         dist_gate_z = (pos_w[:, 2] - self._gate_pos_w[:, 2]).abs()    # [E]
 
-        # Before gate: reward proximity in YZ × exponential approach reward in X
         gate_centering = (
             (self.cfg.gate_half_width  - dist_gate_y)
             + (self.cfg.gate_half_height - dist_gate_z)
@@ -339,22 +282,16 @@ class FlyThroughEnv(DirectRLEnv):
             torch.ones_like(dist_to_gate_plane),  # once past gate: full reward
         )
 
-        # --- Uprightness ---
-        # up_z = Z-component of body z-axis in world frame, from quaternion [w,x,y,z]
-        # up_z = 1 - 2*(x^2 + y^2)
         quat  = self._robot.data.root_quat_w
         up_z  = 1.0 - 2.0 * (quat[:, 1].pow(2) + quat[:, 2].pow(2))  # [E]
         r_up  = 0.5 * ((up_z + 1.0) / 2.0).pow(2)
 
-        # --- Anti-spin ---
         yaw_rate_sq = self._robot.data.root_ang_vel_b[:, 2].pow(2)   # [E]
         r_spin = 0.5 / (1.0 + yaw_rate_sq)
 
-        # --- Effort ---
         effort   = self._actions.pow(2).mean(dim=-1)                  # [E]
         r_effort = self.cfg.reward_effort_weight * torch.exp(-effort)
 
-        # --- Success tracking ---
         success = (dist_to_target < 0.2) & (pos_w[:, 0] > self._gate_pos_w[:, 0])
         self._episode_sums["success"] += success.float()
 
@@ -367,28 +304,20 @@ class FlyThroughEnv(DirectRLEnv):
 
         return total
 
-    # -----------------------------------------------------------------------
-    # Done conditions
-    # -----------------------------------------------------------------------
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         pos_w      = self._robot.data.root_pos_w        # [E, 3]
         pos_local  = pos_w - self.scene.env_origins     # env-local frame [E, 3]
 
-        # --- Gate crossing detection (one-shot) ---
         crossed_now = pos_w[:, 0] > self._gate_pos_w[:, 0]  # [E]
         crossing    = crossed_now & (~self._crossed_plane)   # first-time crossing
         self._crossed_plane |= crossed_now
 
-        # Was drone inside the gate opening when it crossed?
         within_y     = (pos_w[:, 1] - self._gate_pos_w[:, 1]).abs() < self.cfg.gate_half_width
         within_z     = (pos_w[:, 2] - self._gate_pos_w[:, 2]).abs() < self.cfg.gate_half_height
         through_gate = within_y & within_z
 
-        # Invalidate: crossed the plane but missed the opening
         invalid = crossing & ~through_gate
 
-        # --- Other termination criteria ---
         dist_to_target = (self._target_pos_w - pos_w).norm(dim=-1)
 
         misbehave = (
@@ -405,15 +334,10 @@ class FlyThroughEnv(DirectRLEnv):
 
         return terminated, time_out
 
-    # -----------------------------------------------------------------------
-    # Reset
-    # -----------------------------------------------------------------------
-
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
-        # --- Flush episode logs ---
         extras = self.extras.setdefault("log", {})
         for key, buf in self._episode_sums.items():
             extras[f"Episode/{key}"] = (
@@ -423,7 +347,6 @@ class FlyThroughEnv(DirectRLEnv):
 
         super()._reset_idx(env_ids)
 
-        # Randomise episode start offsets on a full reset to desynchronise envs
         if len(env_ids) == self.num_envs:
             self.episode_length_buf = torch.randint_like(
                 self.episode_length_buf, high=int(self.max_episode_length)
@@ -432,7 +355,6 @@ class FlyThroughEnv(DirectRLEnv):
         M       = len(env_ids)
         origins = self.scene.env_origins[env_ids]  # [M, 3]
 
-        # --- Spawn drone at a random position behind the gate ---
         default_root = self._robot.data.default_root_state[env_ids].clone()
 
         spawn_off = torch.stack(
@@ -444,7 +366,6 @@ class FlyThroughEnv(DirectRLEnv):
             dim=-1,
         )  # [M, 3]
 
-        # Small random initial orientation (roll / pitch only)
         roll  = torch.empty(M, device=self.device).uniform_(-0.2, 0.2) * math.pi
         pitch = torch.empty(M, device=self.device).uniform_(-0.2, 0.2) * math.pi
         yaw   = torch.zeros(M, device=self.device)
@@ -463,7 +384,6 @@ class FlyThroughEnv(DirectRLEnv):
 
         self._ctrl.reset(env_ids)
 
-        # --- Randomise gate position (Y only, X and Z fixed) ---
         gate_y = torch.empty(M, device=self.device).uniform_(
             -self.cfg.gate_moving_range, self.cfg.gate_moving_range
         )
@@ -471,7 +391,6 @@ class FlyThroughEnv(DirectRLEnv):
         self._gate_pos_w[env_ids, 1] = origins[:, 1] + gate_y
         self._gate_pos_w[env_ids, 2] = origins[:, 2] + _GATE_Z
 
-        # --- Randomise target position (on the far side of the gate) ---
         target_off = torch.stack(
             [
                 torch.empty(M, device=self.device).uniform_(1.5, 2.5),   # x past gate
@@ -482,19 +401,13 @@ class FlyThroughEnv(DirectRLEnv):
         )  # [M, 3]
         self._target_pos_w[env_ids] = origins + target_off
 
-        # --- Reset gate-crossing flag ---
         self._crossed_plane[env_ids] = False
 
-        # --- Debug visualisation for env 0 ---
         if self.cfg.debug_vis and (env_ids == 0).any().item():
             self._draw_gate_env0()
             if not self._camera_initialised:
                 self._init_camera_env0()
                 self._camera_initialised = True
-
-    # -----------------------------------------------------------------------
-    # Gate visualisation helpers (env 0 only)
-    # -----------------------------------------------------------------------
 
     def _draw_gate_env0(self):
         """Draw the gate rectangle and target cross for env 0."""
@@ -504,7 +417,6 @@ class FlyThroughEnv(DirectRLEnv):
         hw = self.cfg.gate_half_width
         hh = self.cfg.gate_half_height
 
-        # Gate opening corners  (world frame, lying in the YZ plane at gx)
         tl = (gx, gy - hw, gz + hh)
         tr = (gx, gy + hw, gz + hh)
         br = (gx, gy + hw, gz - hh)
@@ -518,7 +430,6 @@ class FlyThroughEnv(DirectRLEnv):
             [3.0] * 4,
         )
 
-        # Target cross marker (red)
         tx, ty, tz = self._target_pos_w[0].cpu().tolist()
         cross = 0.12
         red = (1.0, 0.2, 0.2, 1.0)
@@ -538,10 +449,6 @@ class FlyThroughEnv(DirectRLEnv):
         look_at = origin + np.array([_GATE_X, 0.0, _GATE_Z], dtype=np.float32)
         eye     = look_at  + np.array([-5.0, -5.0, 3.0],     dtype=np.float32)
         set_camera_view(eye=eye, target=look_at)
-
-    # -----------------------------------------------------------------------
-    # Debug vis hooks (required by DirectRLEnv)
-    # -----------------------------------------------------------------------
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if not debug_vis:

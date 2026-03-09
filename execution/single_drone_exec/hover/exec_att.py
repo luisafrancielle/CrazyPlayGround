@@ -183,22 +183,23 @@ class CrazyflieController:
             time.sleep(0.1)
         logger.info(f"Position received: {self.current_pos}")
 
-        # ── Phase 1: position-controlled takeoff ─────────────────────────────
-        logger.info(f"Takeoff via high_level_commander to {TAKEOFF_HEIGHT} m ...")
-        self.cf.high_level_commander.takeoff(TAKEOFF_HEIGHT, TAKEOFF_DURATION)
-        time.sleep(TAKEOFF_DURATION + STABILIZE_PAUSE)
-        logger.info(f"Takeoff complete. Current pos: {self.current_pos}")
-        logger.info(f"Init target pos={target_pos}")
-
-        # ── Transition: hand off to low-level attitude commander ─────────────
-        # Stop the high-level commander so it no longer overrides low-level setpoints,
-        # then send hover setpoints to establish low-level control smoothly.
-        logger.info("Transitioning to attitude control (hover handoff)...")
-        self.cf.high_level_commander.stop()
-        time.sleep(0.05)
-        for _ in range(50):
+        # ── Phase 1: attitude-controlled takeoff (no HLC) ─────────────────────
+        # Use send_setpoint directly from the start to avoid the HLC→low-level
+        # priority transition problem. Ramp thrust from zero to hover smoothly.
+        logger.info(f"Attitude takeoff to ~{TAKEOFF_HEIGHT} m ...")
+        RAMP_STEPS = int(TAKEOFF_DURATION / INTERVAL)
+        for step in range(RAMP_STEPS):
+            frac = min(1.0, step / (RAMP_STEPS * 0.4))  # ramp over first 40%
+            thrust = int(HOVER_THRUST * (0.3 + 0.7 * frac))  # 30% → 100%
+            self.cf.commander.send_setpoint(0, 0, 0, thrust)
+            time.sleep(INTERVAL)
+        # Stabilise at hover thrust
+        logger.info("Stabilising at hover...")
+        for _ in range(int(STABILIZE_PAUSE / INTERVAL)):
             self.cf.commander.send_setpoint(0, 0, 0, HOVER_THRUST)
             time.sleep(INTERVAL)
+        logger.info(f"Takeoff complete. Current pos: {self.current_pos}")
+        logger.info(f"Init target pos={target_pos}")
 
         # ── Phase 2: NN attitude control loop ────────────────────────────────
         logger.info("NN attitude control active.")

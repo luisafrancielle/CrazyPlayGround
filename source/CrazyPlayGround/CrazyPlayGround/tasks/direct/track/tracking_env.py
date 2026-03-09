@@ -35,22 +35,13 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 from .trajectories import TRAJECTORIES, apply_traj_transform
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
-
-
-# ---------------------------------------------------------------------------
-# UI window
-# ---------------------------------------------------------------------------
 
 class TrackingEnvWindow(BaseEnvWindow):
     def __init__(self, env: TrackingEnv, window_name: str = "IsaacLab"):
@@ -60,11 +51,6 @@ class TrackingEnvWindow(BaseEnvWindow):
                 with self.ui_window_elements["debug_vstack"]:
                     self._create_debug_vis_ui_element("targets", self.env)
 
-
-# ---------------------------------------------------------------------------
-# Configs
-# ---------------------------------------------------------------------------
-
 @configclass
 class TrackingEnvCfg(DirectRLEnvCfg):
     """Shared base config for all trajectory-tracking control modes."""
@@ -72,14 +58,12 @@ class TrackingEnvCfg(DirectRLEnvCfg):
     episode_length_s: float = 10.0
     decimation: int = 5
 
-    # Observation: 4 * 3 (rpos lookahead) + 3 (lin_vel_b) + 3 (ang_vel_b) + 4 (quat) = 22
     observation_space: int = 22
     state_space: int = 0
     debug_vis: bool = True
 
     ui_window_class_type = TrackingEnvWindow
 
-    # --- Simulation ---
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 500,
         render_interval=decimation,
@@ -105,15 +89,12 @@ class TrackingEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    # --- Scene ---
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=10.0, replicate_physics=True, clone_in_fabric=True
     )
 
-    # --- Robot ---
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    # --- Trajectory ---
     trajectory_type: str = "lemniscate"
     future_traj_steps: int = 4          # lookahead waypoints in observation
     traj_step_size: float = 5.0         # sim steps between consecutive waypoints
@@ -121,25 +102,20 @@ class TrackingEnvCfg(DirectRLEnvCfg):
 
     randomize_trajectory: bool = True
 
-    # Per-episode randomisation ranges (uniform)
     traj_speed_range: tuple = (0.8, 1.1)    # angular speed multiplier
     traj_scale_range: tuple = (1.5, 3.0)    # x/y scale [m]
     traj_z_scale_range: tuple = (0.8, 1.5)  # z scale [m]
     traj_c_range: tuple = (-0.6, 0.6)       # lemniscate c param
 
-    # --- Safety ---
     reset_thres: float = 0.8    # tracking error [m] that kills episode
 
-    # --- Reward scales ---
     pos_reward_scale: float = 20.0
     lin_vel_reward_scale: float = -0.1
     ang_vel_reward_scale: float = -0.05
     effort_reward_scale: float = 0.0
     action_smooth_reward_scale: float = 0.0
 
-    # --- DroneModule ---
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
-
 
 @configclass
 class PosTrackingEnvCfg(TrackingEnvCfg):
@@ -147,13 +123,11 @@ class PosTrackingEnvCfg(TrackingEnvCfg):
     control_mode: str = "position"
     max_position_delta: float = 0.5     # m
 
-
 @configclass
 class VelTrackingEnvCfg(TrackingEnvCfg):
     action_space: int = 3
     control_mode: str = "velocity"
     max_velocity: float = 3.0           # m/s
-
 
 @configclass
 class AttTrackingEnvCfg(TrackingEnvCfg):
@@ -163,11 +137,6 @@ class AttTrackingEnvCfg(TrackingEnvCfg):
     max_yaw_rate: float = 90.0 * math.pi / 180.0     # rad/s
     min_thrust_scale: float = 0.5
     max_thrust_scale: float = 1.8
-
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
 
 class TrackingEnv(DirectRLEnv):
     cfg: TrackingEnvCfg
@@ -181,7 +150,6 @@ class TrackingEnv(DirectRLEnv):
         self._thrust      = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment      = torch.zeros(self.num_envs, 1, 3, device=self.device)
 
-        # --- PID controller ---
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrl = CascadePIDController.from_drone_config(
             drone_cfg,
@@ -192,7 +160,6 @@ class TrackingEnv(DirectRLEnv):
 
         self._hover_thrust = drone_cfg.physics.mass * 9.81
 
-        # Attitude-mode specific buffers (only used when control_mode=="attitude")
         if self.cfg.control_mode == "attitude":
             self._att_ref      = torch.zeros(self.num_envs, 3, device=self.device)
             self._yaw_rate_ref = torch.zeros(self.num_envs, 1, device=self.device)
@@ -202,15 +169,12 @@ class TrackingEnv(DirectRLEnv):
             self._min_thrust = min_s * self._hover_thrust
             self._max_thrust = max_s * self._hover_thrust
 
-        # Position-mode specific buffers
         if self.cfg.control_mode == "position":
             self._target_pos = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # Velocity-mode specific buffers
         if self.cfg.control_mode == "velocity":
             self._ref_vel = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # --- Trajectory parameters (per-env) ---
         self._traj_w     = torch.ones(self.num_envs, device=self.device)     # angular speed
         self._traj_scale = torch.ones(self.num_envs, 3, device=self.device)  # [N, 3]
         self._traj_rot   = torch.zeros(self.num_envs, 4, device=self.device) # quaternion wxyz
@@ -218,11 +182,9 @@ class TrackingEnv(DirectRLEnv):
         self._traj_c     = torch.zeros(self.num_envs, device=self.device)    # lemniscate c
         self._traj_t0    = torch.zeros(self.num_envs, device=self.device)    # phase offset
 
-        # Trajectory origin in world frame (broadcast over envs)
         origin = self.cfg.traj_origin
         self._traj_origin = torch.tensor(origin, dtype=torch.float, device=self.device)
 
-        # --- Episode logging ---
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in ["lin_vel", "ang_vel", "distance_to_goal"]
@@ -230,8 +192,6 @@ class TrackingEnv(DirectRLEnv):
 
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Enable the debug-draw extension and acquire the drawing interface.
-        # The extension must be enabled before acquire_debug_draw_interface() works.
         import omni.kit.app
         _ext_mgr = omni.kit.app.get_app().get_extension_manager()
         if not _ext_mgr.is_extension_enabled("isaacsim.util.debug_draw"):
@@ -239,14 +199,9 @@ class TrackingEnv(DirectRLEnv):
         from isaacsim.util.debug_draw import _debug_draw
         self._draw = _debug_draw.acquire_debug_draw_interface()
 
-        # Flag so we only set the camera once (on the first reset of env 0).
         self._camera_initialised = False
 
         self.set_debug_vis(self.cfg.debug_vis)
-
-    # -----------------------------------------------------------------------
-    # Scene setup
-    # -----------------------------------------------------------------------
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -262,10 +217,6 @@ class TrackingEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    # -----------------------------------------------------------------------
-    # Trajectory helpers
-    # -----------------------------------------------------------------------
-
     def _compute_traj(self, steps: int, env_ids: torch.Tensor, step_size: float) -> torch.Tensor:
         """Compute `steps` consecutive waypoints for the given environments.
 
@@ -275,22 +226,16 @@ class TrackingEnv(DirectRLEnv):
         N = len(env_ids)
         dt = self.cfg.sim.dt * self.cfg.decimation  # policy dt
 
-        # Time indices for each lookahead step
         offsets = step_size * torch.arange(1, steps + 1, device=self.device).float()  # [steps]
         t_base = self.episode_length_buf[env_ids].float().unsqueeze(1)                 # [N, 1]
         t_idx = t_base + offsets.unsqueeze(0)                                           # [N, steps]
 
-        # Convert step count to radians
         t = self._traj_t0[env_ids].unsqueeze(1) + self._traj_w[env_ids].unsqueeze(1) * t_idx * dt
 
-        # Evaluate trajectory function (supports c parameter via lemniscate wrapper)
         traj_fn = TRAJECTORIES[self.cfg.trajectory_type]
         if self.cfg.trajectory_type == "lemniscate":
-            # Evaluate per-env c parameter; batch the call by iterating
-            # (N can be large so we vectorise: pass c=0 then add z correction)
             c = self._traj_c[env_ids]  # [N]
             raw = traj_fn(t, c=0.0)    # [N, steps, 3]
-            # Add z coupling: c * sin(2*t)  per env
             z_extra = c.unsqueeze(1) * torch.sin(2.0 * t)  # [N, steps]
             raw = raw + torch.stack([
                 torch.zeros_like(z_extra),
@@ -300,7 +245,6 @@ class TrackingEnv(DirectRLEnv):
         else:
             raw = traj_fn(t)  # [N, steps, 3]
 
-        # Per-env origin: local offset + env grid origin → each trajectory stays in its own env
         origin = self._traj_origin.unsqueeze(0) + self._terrain.env_origins[env_ids]  # [N, 3]
         return apply_traj_transform(raw, self._traj_scale[env_ids], self._traj_rot[env_ids], origin)
 
@@ -319,7 +263,6 @@ class TrackingEnv(DirectRLEnv):
             z_scale = torch.empty(N, device=dev).uniform_(lo_z, hi_z)
             self._traj_scale[env_ids] = torch.stack([xy_scale, xy_scale, z_scale], dim=-1)
 
-            # Random yaw rotation of the whole trajectory
             yaw = torch.empty(N, device=dev).uniform_(-math.pi, math.pi)
             zeros = torch.zeros(N, device=dev)
             self._traj_rot[env_ids] = quat_from_euler_xyz(zeros, zeros, yaw)
@@ -327,7 +270,6 @@ class TrackingEnv(DirectRLEnv):
             lo, hi = self.cfg.traj_c_range
             self._traj_c[env_ids] = torch.empty(N, device=dev).uniform_(lo, hi)
 
-            # Random phase offset so each episode starts at a different point
             self._traj_t0[env_ids] = torch.empty(N, device=dev).uniform_(0.0, 2.0 * math.pi)
         else:
             self._traj_w[env_ids] = 1.0
@@ -335,10 +277,6 @@ class TrackingEnv(DirectRLEnv):
             self._traj_rot[env_ids] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=dev)
             self._traj_c[env_ids] = 0.0
             self._traj_t0[env_ids] = 0.0
-
-    # -----------------------------------------------------------------------
-    # Physics step
-    # -----------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._prev_actions = self._actions.clone()
@@ -407,21 +345,15 @@ class TrackingEnv(DirectRLEnv):
         self._moment[:, 0, :] = moment
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
-    # -----------------------------------------------------------------------
-    # Observations
-    # -----------------------------------------------------------------------
-
     def _get_observations(self) -> dict:
         all_env_ids = torch.arange(self.num_envs, device=self.device)
 
-        # Compute future waypoints: [N, future_traj_steps, 3]
         waypoints_w = self._compute_traj(
             steps=self.cfg.future_traj_steps,
             env_ids=all_env_ids,
             step_size=self.cfg.traj_step_size,
         )
 
-        # Express each waypoint in body frame
         rpos_list = []
         for i in range(self.cfg.future_traj_steps):
             rpos_b, _ = subtract_frame_transforms(
@@ -442,14 +374,9 @@ class TrackingEnv(DirectRLEnv):
         )
         return {"policy": obs}
 
-    # -----------------------------------------------------------------------
-    # Rewards
-    # -----------------------------------------------------------------------
-
     def _get_rewards(self) -> torch.Tensor:
         all_env_ids = torch.arange(self.num_envs, device=self.device)
 
-        # Current target = first lookahead waypoint
         current_wp = self._compute_traj(
             steps=1,
             env_ids=all_env_ids,
@@ -473,10 +400,6 @@ class TrackingEnv(DirectRLEnv):
             self._episode_sums[key] += value
         return reward
 
-    # -----------------------------------------------------------------------
-    # Dones
-    # -----------------------------------------------------------------------
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -494,15 +417,10 @@ class TrackingEnv(DirectRLEnv):
 
         return died, time_out
 
-    # -----------------------------------------------------------------------
-    # Reset
-    # -----------------------------------------------------------------------
-
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
-        # --- Logging ---
         all_env_ids = torch.arange(self.num_envs, device=self.device)
         current_wp = self._compute_traj(
             steps=1, env_ids=env_ids, step_size=self.cfg.traj_step_size
@@ -524,10 +442,8 @@ class TrackingEnv(DirectRLEnv):
         extras["Metrics/final_distance_to_goal"] = final_distance.item()
         self.extras["log"].update(extras)
 
-        # --- Sample new trajectory params ---
         self._sample_traj_params(env_ids)
 
-        # --- Reset robot ---
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
         if len(env_ids) == self.num_envs:
@@ -538,7 +454,6 @@ class TrackingEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 
-        # Spawn drone at (or near) the trajectory start point
         traj_start = self._compute_traj(
             steps=1, env_ids=env_ids, step_size=0.0
         )[:, 0, :]  # [N, 3]
@@ -548,7 +463,6 @@ class TrackingEnv(DirectRLEnv):
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
         default_root_state[:, :3] = traj_start
 
-        # Add small random perturbation around spawn
         spawn = default_root_state.clone()
         spawn[:, :2] += torch.zeros_like(spawn[:, :2]).uniform_(-0.3, 0.3)
         spawn[:, 2]  += torch.zeros_like(spawn[:, 2]).uniform_(-0.2, 0.2)
@@ -558,24 +472,17 @@ class TrackingEnv(DirectRLEnv):
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # Reset PID integrators
         self._ctrl.reset(env_ids)
 
-        # Redraw trajectory lines for env 0 whenever it resets.
         if self.cfg.debug_vis and (0 in env_ids.tolist()):
             self._draw_env0_traj()
             if not self._camera_initialised:
                 self._init_camera_env0()
                 self._camera_initialised = True
 
-    # -----------------------------------------------------------------------
-    # Trajectory line drawing (debug_draw) — env 0 only
-    # -----------------------------------------------------------------------
-
     def _draw_env0_traj(self):
         """Draw the full trajectory for env 0 as white lines."""
         env0 = torch.tensor([0], device=self.device)
-        # 800 steps at step_size=1 → ~8 rad ≈ 1.3 full periods (one complete loop visible).
         n_pts = 800
         traj_vis = self._compute_traj(steps=n_pts, env_ids=env0, step_size=1.0)[0]  # [n_pts, 3]
         pts = [tuple(p) for p in traj_vis.cpu().tolist()]
@@ -595,14 +502,9 @@ class TrackingEnv(DirectRLEnv):
         eye    = traj_c + np.array([6.0, -6.0, 5.0], dtype=np.float32)
         set_camera_view(eye=eye, target=traj_c)
 
-    # -----------------------------------------------------------------------
-    # Debug visualisation hooks (required by DirectRLEnv interface)
-    # -----------------------------------------------------------------------
-
     def _set_debug_vis_impl(self, debug_vis: bool):
         if not debug_vis:
             self._draw.clear_lines()
 
     def _debug_vis_callback(self, event):
-        # Lines are redrawn at reset — nothing to do every frame.
         pass
