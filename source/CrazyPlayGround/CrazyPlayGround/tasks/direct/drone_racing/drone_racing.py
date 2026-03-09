@@ -67,7 +67,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_from_euler_xyz, subtract_frame_transforms
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 from .track_generator import spawn_track
 
@@ -76,7 +76,7 @@ from .track_generator import spawn_track
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
 )
 
 # ---------------------------------------------------------------------------

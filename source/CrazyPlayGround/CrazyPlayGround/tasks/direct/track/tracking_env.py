@@ -35,7 +35,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 from .trajectories import TRAJECTORIES, apply_traj_transform
 
@@ -44,7 +44,7 @@ from .trajectories import TRAJECTORIES, apply_traj_transform
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
 )
 
 
@@ -137,7 +137,7 @@ class TrackingEnvCfg(DirectRLEnvCfg):
     effort_reward_scale: float = 0.0
     action_smooth_reward_scale: float = 0.0
 
-    # --- DroneModule ---
+    # --- Drone config ---
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
 
 

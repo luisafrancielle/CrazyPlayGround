@@ -31,11 +31,11 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
-# Path to the Crazyflie config bundled with DroneModule.
+# Path to the local Crazyflie config.
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
 )
 
 ControlMode = Literal["position", "velocity", "attitude"]

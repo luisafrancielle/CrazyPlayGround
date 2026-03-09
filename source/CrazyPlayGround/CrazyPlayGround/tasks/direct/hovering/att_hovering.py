@@ -40,12 +40,12 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
-from drone import CascadePIDController, load_config
+from CrazyPlayGround.controllers import CascadePIDController, load_config
 
-# Path to the Crazyflie config bundled with DroneModule.
+# Path to the local Crazyflie config.
 # Adjust if the project layout changes.
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[7] / "DroneModule" / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
 )
 
 
@@ -80,7 +80,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     ui_window_class_type = QuadcopterEnvWindow
 
-    # Path to the DroneModule YAML config used to build CrazyfliePIDController.
+    # Path to the YAML config used to build CrazyfliePIDController.
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
 
     # simulation — same as pos_hovering
@@ -147,7 +147,7 @@ class QuadcopterEnv(DirectRLEnv):
         # Get specific body indices
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Build the cascade PID controller from DroneModule.
+        # Build the cascade PID controller.
         # At command_level="attitude" the position and velocity loops are bypassed;
         # the agent's roll/pitch references and yaw rate feed directly into the
         # attitude angle → rate cascade.
