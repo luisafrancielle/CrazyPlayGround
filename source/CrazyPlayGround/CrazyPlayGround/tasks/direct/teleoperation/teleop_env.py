@@ -33,14 +33,12 @@ from isaaclab.utils import configclass
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
 from CrazyPlayGround.controllers import CascadePIDController, load_config
 
-# Path to the local Crazyflie config.
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
 
 ControlMode = Literal["position", "velocity", "attitude"]
 RateProfile = Literal["none", "betaflight", "actual", "kiss", "raceflight"]
-
 
 class TeleoperationEnvWindow(BaseEnvWindow):
     """Window manager for the Teleoperation environment."""
@@ -52,40 +50,30 @@ class TeleoperationEnvWindow(BaseEnvWindow):
                 with self.ui_window_elements["debug_vstack"]:
                     self._create_debug_vis_ui_element("targets", self.env)
 
-
 @configclass
 class TeleoperationEnvCfg(DirectRLEnvCfg):
-    # Long episode for teleoperation sessions (5 minutes)
     episode_length_s = 300.0
     decimation = 5
 
-    # Unified action space: 7D [vx, vy, vz, roll, pitch, yaw_rate, thrust]
-    # Different modes use different subsets
     action_space = 7
-    # Observation: 13D [pos(3), quat(4), lin_vel(3), ang_vel(3)]
     observation_space = 13
     state_space = 0
     debug_vis = True
 
-    # Control limits
     max_velocity = 3.0  # m/s
     max_position_delta = 0.5  # m per step
     max_roll_pitch = 30.0 * math.pi / 180.0  # 30 deg max tilt (angle mode)
     max_yaw_rate = 90.0 * math.pi / 180.0  # 90 deg/s max yaw rate (angle mode)
     max_thrust_scale = 1.8  # fraction of hover thrust
 
-    # Safety limits
     min_altitude = 0.1
     max_altitude = 3.0
 
-    # Rate profile for attitude mode: "none" = angle mode (default)
-    # Options: "none", "betaflight", "actual", "kiss", "raceflight"
     rate_profile: str = "none"
 
     ui_window_class_type = TeleoperationEnvWindow
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
 
-    # Simulation config
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 500,
         render_interval=decimation,
@@ -111,13 +99,11 @@ class TeleoperationEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    # Single environment for teleoperation
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=1, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
     )
 
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-
 
 class TeleoperationEnv(DirectRLEnv):
     """Unified teleoperation environment supporting position, velocity, and attitude control."""
@@ -131,13 +117,10 @@ class TeleoperationEnv(DirectRLEnv):
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
 
-        # Current control mode
         self._control_mode: ControlMode = "velocity"
 
-        # Get body index
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Build the cascade PID controller
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrl = CascadePIDController.from_drone_config(
             drone_cfg,
@@ -146,18 +129,15 @@ class TeleoperationEnv(DirectRLEnv):
             device=self.device,
         )
 
-        # Thrust limits
         self._hover_thrust = drone_cfg.physics.mass * 9.81
         self._max_thrust = self.cfg.max_thrust_scale * self._hover_thrust
 
-        # Rate profile function (None = angle mode)
         self._rate_profile_fn: Optional[Callable] = self._build_rate_profile_fn(cfg.rate_profile)
         if self._rate_profile_fn is not None:
             print(f"[TeleoperationEnv] Attitude mode: rate profile = {cfg.rate_profile}")
         else:
             print("[TeleoperationEnv] Attitude mode: angle mode (no rate profile)")
 
-        # Control references
         self._target_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self._ref_vel = torch.zeros(self.num_envs, 3, device=self.device)
         self._att_ref = torch.zeros(self.num_envs, 3, device=self.device)
@@ -166,8 +146,6 @@ class TeleoperationEnv(DirectRLEnv):
         self._thrust_cmd = torch.zeros(self.num_envs, 1, device=self.device)
 
         self.set_debug_vis(self.cfg.debug_vis)
-
-    # ── Rate profile factory ──────────────────────────────────────────────────
 
     @staticmethod
     def _build_rate_profile_fn(profile: str) -> Optional[Callable]:
@@ -190,8 +168,6 @@ class TeleoperationEnv(DirectRLEnv):
             raise ValueError(f"Unknown rate profile '{profile}'. Choose from {list(_profiles)} or 'none'.")
         return _profiles[profile]
 
-    # ── Mode management ───────────────────────────────────────────────────────
-
     @property
     def control_mode(self) -> ControlMode:
         """Get current control mode."""
@@ -204,18 +180,12 @@ class TeleoperationEnv(DirectRLEnv):
 
         if mode != self._control_mode:
             self._control_mode = mode
-            # Reset PID integrators when switching modes
             self._ctrl.reset(torch.arange(self.num_envs, device=self.device))
-            # Reset control references
             self._target_pos = self._robot.data.root_pos_w.clone()
             self._ref_vel.zero_()
             self._att_ref.zero_()
             self._body_rate_ref.zero_()
             self._yaw_rate_ref.zero_()
-            # Keep thrust_cmd at current value so the first step after a switch
-            # doesn't jerk — it will be overwritten by _pre_physics_step anyway.
-
-    # ── Scene ─────────────────────────────────────────────────────────────────
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -230,8 +200,6 @@ class TeleoperationEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    # ── Control ───────────────────────────────────────────────────────────────
 
     def _pre_physics_step(self, actions: torch.Tensor):
         """Process actions based on current control mode.
@@ -257,19 +225,14 @@ class TeleoperationEnv(DirectRLEnv):
 
         elif self._control_mode == "attitude":
             if self._rate_profile_fn is None:
-                # ── Angle mode (default) ──────────────────────────────────────
                 roll_ref  = self._actions[:, 3] * self.cfg.max_roll_pitch
                 pitch_ref = self._actions[:, 4] * self.cfg.max_roll_pitch
                 self._att_ref = torch.stack([roll_ref, pitch_ref, torch.zeros_like(roll_ref)], dim=-1)
                 self._yaw_rate_ref = (self._actions[:, 5] * self.cfg.max_yaw_rate).unsqueeze(-1)
             else:
-                # ── Rate mode: stick → rate profile → body-rate setpoints ─────
-                # actions[:, 3:6] = [roll, pitch, yaw] sticks in [-1, 1]
                 rc_input = self._actions[:, 3:6]
                 self._body_rate_ref = self._rate_profile_fn(rc_input)  # [N, 3] rad/s
 
-            # Thrust: action[6] in [0, 1] — 0 = no thrust (falls), 1 = max thrust.
-            # This is true for both angle and rate modes.
             thrust_normalized = self._actions[:, 6].clamp(0.0, 1.0)
             thrust_ref = thrust_normalized * self._max_thrust
             self._thrust_cmd = (thrust_ref / self._ctrl.thrust_cmd_scale).unsqueeze(-1)
@@ -302,7 +265,6 @@ class TeleoperationEnv(DirectRLEnv):
             )
         elif self._control_mode == "attitude":
             if self._rate_profile_fn is None:
-                # Angle mode: angle setpoints → rate PID via attitude loop
                 thrust, moment = self._ctrl(
                     root_state,
                     target_attitude=self._att_ref,
@@ -312,7 +274,6 @@ class TeleoperationEnv(DirectRLEnv):
                     body_rates_in_body_frame=True,
                 )
             else:
-                # Rate mode: body-rate setpoints → rate PID directly
                 thrust, moment = self._ctrl(
                     root_state,
                     target_body_rates=self._body_rate_ref,
@@ -324,8 +285,6 @@ class TeleoperationEnv(DirectRLEnv):
         self._thrust[:, 0, 2] = thrust.squeeze(-1)
         self._moment[:, 0, :] = moment
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
-
-    # ── Observations / rewards / dones ────────────────────────────────────────
 
     def _get_observations(self) -> dict:
         """Return full state observation: pos(3), quat(4), lin_vel(3), ang_vel(3)."""

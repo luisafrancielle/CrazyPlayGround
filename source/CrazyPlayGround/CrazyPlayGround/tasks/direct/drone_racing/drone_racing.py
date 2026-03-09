@@ -71,32 +71,10 @@ from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 from .track_generator import spawn_track
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
 
-# ---------------------------------------------------------------------------
-# Track definition  — single FPV circuit, shared across all envs
-# ---------------------------------------------------------------------------
-#
-# Stadium-oval course viewed from above (X right, Y forward, Z up).
-# Two high apex gates at the top (Z=4.5 m), a low long-straight at the
-# bottom (G9–G0 at Z≈2–2.5 m), and smooth height transitions on each side.
-# Every inter-gate gap is ≥ 3.6 m, ensuring the 3.0 m spawn offset never
-# places a drone inside an adjacent gate mesh.
-#
-#           G4 (4.5m)  G5 (4.5m)
-#       G3                   G6
-#    G2                          G7
-#       G1                   G8
-#           G0 ←──── G9 (2.0m)
-#           ↑ drones spawn 3 m in front of a random gate
-#
-# World-frame gate positions [m]:
 _GATE_WORLD_POS: list[tuple[float, float, float]] = [
     ( 0.0, -5.0, 2.5),   # 0  start / finish  (bottom, low)
     ( 4.0, -3.0, 3.0),   # 1  bottom-right bend
@@ -113,19 +91,12 @@ _GATE_WORLD_POS: list[tuple[float, float, float]] = [
 _NUM_GATES: int = len(_GATE_WORLD_POS)
 _GATE_RADIUS: float = 1.0   # [m] crossing-detection radius
 
-# The gate USD mesh has its origin at the bottom of the frame; the centre of
-# the gate opening sits ~1.067 m above that origin (from the mesh's local
-# Z-translation).  All navigation / visualisation logic should target the
-# centre, not the bottom.
 _GATE_CENTER_Z_OFFSET: float = 1.067
 
-# Gate centre positions (used for navigation, rewards, visualisation)
 _GATE_CENTER_POS: list[tuple[float, float, float]] = [
     (x, y, z + _GATE_CENTER_Z_OFFSET) for x, y, z in _GATE_WORLD_POS
 ]
 
-# Gate normals = direction of travel at each gate
-# = unit vector from gate[i] → gate[(i+1) % N]
 def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
     normals = []
     n = len(positions)
@@ -137,30 +108,17 @@ def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
         normals.append((dx / length, dy / length, dz / length))
     return normals
 
-
 _GATE_NORMALS: list[tuple[float, float, float]] = _build_normals(_GATE_CENTER_POS)
 
-# Gate yaw angles (XY-plane direction of travel) used to orient USD meshes and
-# to align the drone's heading on spawn.
 _GATE_YAWS: list[float] = [math.atan2(n[1], n[0]) for n in _GATE_NORMALS]
 
-# Track config dict passed to spawn_track()
 _TRACK_CONFIG: dict = {
     str(g): {"pos": _GATE_WORLD_POS[g], "yaw": _GATE_YAWS[g]}
     for g in range(_NUM_GATES)
 }
 
-# ---------------------------------------------------------------------------
-# Observation dimensions
-# ---------------------------------------------------------------------------
-
 _OBS_BASE: int = 16   # quat(4) + lin_vel_b(3) + ang_vel_b(3) + curr_gate_b(3) + next_gate_b(3)
 _TIME_DIM: int = 4
-
-# ---------------------------------------------------------------------------
-# Configs
-# ---------------------------------------------------------------------------
-
 
 @configclass
 class DroneRacingEnvCfg(DirectRLEnvCfg):
@@ -170,17 +128,14 @@ class DroneRacingEnvCfg(DirectRLEnvCfg):
     decimation: int = 5
     debug_vis: bool = True
 
-    # Gate
     gate_radius: float = _GATE_RADIUS
 
-    # Reward weights
     progress_scale: float = 5.0
     gate_pass_reward: float = 10.0
     speed_bonus_scale: float = 0.5      # reward for velocity toward the gate
     effort_weight: float = 0.001
     crash_penalty: float = -5.0
 
-    # Control (overridden in sub-configs)
     control_mode: str = "velocity"
     max_velocity: float = 4.0                          # velocity mode [m/s]
     max_roll_pitch: float = 30.0 * math.pi / 180.0    # attitude mode [rad]
@@ -202,13 +157,11 @@ class DroneRacingEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # env_spacing ≈ 0 so all envs occupy the same world location → one shared track
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=0.001, replicate_physics=True
     )
 
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
-
 
 @configclass
 class VelDroneRacingEnvCfg(DroneRacingEnvCfg):
@@ -218,7 +171,6 @@ class VelDroneRacingEnvCfg(DroneRacingEnvCfg):
     observation_space: int = _OBS_BASE + _TIME_DIM  # 20
     control_mode: str = "velocity"
 
-
 @configclass
 class AttDroneRacingEnvCfg(DroneRacingEnvCfg):
     """Attitude-controlled racing.  Action = [roll, pitch, yaw_rate, thrust] in [-1, 1]."""
@@ -226,12 +178,6 @@ class AttDroneRacingEnvCfg(DroneRacingEnvCfg):
     action_space: int = 4
     observation_space: int = _OBS_BASE + _TIME_DIM  # 20
     control_mode: str = "attitude"
-
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
 
 class DroneRacingEnv(DirectRLEnv):
     cfg: DroneRacingEnvCfg
@@ -241,7 +187,6 @@ class DroneRacingEnv(DirectRLEnv):
 
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Cascade PID controller
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrl = CascadePIDController.from_drone_config(
             drone_cfg,
@@ -250,17 +195,14 @@ class DroneRacingEnv(DirectRLEnv):
             device=self.device,
         )
 
-        # Thrust limits (used in attitude mode only)
         hover_thrust = drone_cfg.physics.mass * 9.81
         self._min_thrust = self.cfg.min_thrust_scale * hover_thrust
         self._max_thrust = self.cfg.max_thrust_scale * hover_thrust
 
-        # Action / force buffers
         self._actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._thrust_buf = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment_buf = torch.zeros(self.num_envs, 1, 3, device=self.device)
 
-        # Mode-specific setpoint buffers
         if self.cfg.control_mode == "velocity":
             self._ref_vel = torch.zeros(self.num_envs, 3, device=self.device)
         else:
@@ -268,12 +210,9 @@ class DroneRacingEnv(DirectRLEnv):
             self._yaw_rate_ref = torch.zeros(self.num_envs, 1, device=self.device)
             self._thrust_pwm = torch.zeros(self.num_envs, 1, device=self.device)
 
-        # Gate geometry tensors — fixed world positions, same for all envs
-        # _gate_world_pos = bottom of gate USD (used for spawning only)
         self._gate_world_pos = torch.tensor(
             _GATE_WORLD_POS, dtype=torch.float32, device=self.device
         )  # [G, 3]
-        # _gate_center_pos = centre of gate opening (used for navigation / viz)
         self._gate_center_pos = torch.tensor(
             _GATE_CENTER_POS, dtype=torch.float32, device=self.device
         )  # [G, 3]
@@ -281,19 +220,16 @@ class DroneRacingEnv(DirectRLEnv):
             _GATE_NORMALS, dtype=torch.float32, device=self.device
         )  # [G, 3]
 
-        # Per-env race progress
         self._gate_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_signed = torch.zeros(self.num_envs, device=self.device)
         self._prev_dist = torch.zeros(self.num_envs, device=self.device)
         self._steps_since_gate = torch.zeros(self.num_envs, device=self.device)
 
-        # Episode logging
         self._episode_sums = {
             k: torch.zeros(self.num_envs, device=self.device)
             for k in ["progress", "gates_passed"]
         }
 
-        # Debug draw
         import omni.kit.app
         _ext_mgr = omni.kit.app.get_app().get_extension_manager()
         if not _ext_mgr.is_extension_enabled("isaacsim.util.debug_draw"):
@@ -302,16 +238,9 @@ class DroneRacingEnv(DirectRLEnv):
         self._draw = _debug_draw.acquire_debug_draw_interface()
         self._camera_initialised = False
 
-    # -----------------------------------------------------------------------
-    # Scene setup
-    # -----------------------------------------------------------------------
-
     def _setup_scene(self):
         self._robot = Articulation(CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot"))
 
-        # Spawn ONE shared track in the world (outside /World/envs/), so it is
-        # NOT replicated per environment.  All parallel drones race through the
-        # same physical gates.
         spawn_track(_TRACK_CONFIG)
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -324,10 +253,6 @@ class DroneRacingEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    # -----------------------------------------------------------------------
-    # Physics step
-    # -----------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._actions = actions.clone().clamp(-1.0, 1.0)
@@ -377,25 +302,18 @@ class DroneRacingEnv(DirectRLEnv):
             self._thrust_buf, self._moment_buf, body_ids=self._body_id
         )
 
-    # -----------------------------------------------------------------------
-    # Observations
-    # -----------------------------------------------------------------------
-
     def _get_observations(self) -> dict:
         pos_w     = self._robot.data.root_pos_w       # [E, 3]
         quat_w    = self._robot.data.root_quat_w      # [E, 4]  [w, x, y, z]
         lin_vel_b = self._robot.data.root_lin_vel_b   # [E, 3]
         ang_vel_b = self._robot.data.root_ang_vel_b   # [E, 3]
 
-        # Shared world-frame gate centre positions (same for every env)
         curr_gate_w = self._gate_center_pos[self._gate_idx]                      # [E, 3]
         next_gate_w = self._gate_center_pos[(self._gate_idx + 1) % _NUM_GATES]  # [E, 3]
 
-        # Gate positions expressed in the drone's body frame
         curr_gate_b, _ = subtract_frame_transforms(pos_w, quat_w, curr_gate_w)  # [E, 3]
         next_gate_b, _ = subtract_frame_transforms(pos_w, quat_w, next_gate_w)  # [E, 3]
 
-        # Time encoding: episode progress as a scalar repeated 4 times
         t = (self.episode_length_buf / self.max_episode_length).unsqueeze(-1)  # [E, 1]
         time_enc = t.expand(-1, _TIME_DIM)                                      # [E, 4]
 
@@ -404,27 +322,17 @@ class DroneRacingEnv(DirectRLEnv):
         )
         return {"policy": obs}
 
-    # -----------------------------------------------------------------------
-    # Rewards
-    # -----------------------------------------------------------------------
-
     def _get_rewards(self) -> torch.Tensor:
         pos_w = self._robot.data.root_pos_w  # [E, 3]
 
-        # ── Gate crossing detection ──────────────────────────────────────────
         curr_gate_w = self._gate_center_pos[self._gate_idx]          # [E, 3]
         gate_normal = self._gate_world_normal[self._gate_idx]        # [E, 3]
 
         diff   = pos_w - curr_gate_w
         signed = torch.sum(diff * gate_normal, dim=-1)              # [E] along normal
-        # In-plane distance: strip the normal component from diff so we measure
-        # how far the drone is from the gate *centre* within the gate's own plane.
-        # This enforces that the drone actually flies through the opening, not
-        # below/above/beside the gate frame.
         lateral = diff - signed.unsqueeze(-1) * gate_normal          # [E, 3]
         planar  = torch.norm(lateral, dim=-1)                        # [E] in-plane dist
 
-        # Crossing: plane sign flipped forward AND within the gate opening radius
         crossed = (
             (self._prev_signed <= 0.0)
             & (signed > 0.0)
@@ -436,49 +344,37 @@ class DroneRacingEnv(DirectRLEnv):
             self._episode_sums["gates_passed"][crossed] += 1.0
             self._steps_since_gate[crossed] = 0.0
 
-        # Recompute signed distance for the (possibly updated) current gate so
-        # that next step's detection is always relative to the correct target.
         new_gate_w  = self._gate_center_pos[self._gate_idx]
         new_normal  = self._gate_world_normal[self._gate_idx]
         new_diff    = pos_w - new_gate_w
         new_signed  = torch.sum(new_diff * new_normal, dim=-1)
         self._prev_signed = new_signed.detach().clone()
 
-        # ── Progress reward ──────────────────────────────────────────────────
         curr_dist  = torch.norm(new_diff, dim=-1)
         r_progress = (self._prev_dist - curr_dist) * self.cfg.progress_scale
         self._prev_dist = curr_dist.detach().clone()
         self._episode_sums["progress"] += r_progress.clamp(min=0.0)
 
-        # ── Speed bonus: reward velocity component toward the current gate ──
         lin_vel_w = self._robot.data.root_lin_vel_w                    # [E, 3]
         to_gate   = new_diff / (curr_dist.unsqueeze(-1) + 1e-6)       # unit vec drone→gate
-        # Negative because new_diff = pos - gate, so toward gate = -to_gate
         speed_toward = torch.sum(lin_vel_w * (-to_gate), dim=-1).clamp(min=0.0)
         r_speed = self.cfg.speed_bonus_scale * speed_toward
 
-        # ── Gate pass bonus (time-decaying: faster crossing = higher reward) ─
-        # Base reward + bonus that decays with steps since last gate crossing.
-        # At 0 steps the bonus is 1x base, decaying to 0 over ~200 steps.
         self._steps_since_gate += 1.0
         time_bonus = torch.exp(-self._steps_since_gate / 200.0)
         r_gate_pass = crossed.float() * self.cfg.gate_pass_reward * (1.0 + time_bonus)
 
-        # ── Uprightness ──────────────────────────────────────────────────────
         quat = self._robot.data.root_quat_w
         up_z = 1.0 - 2.0 * (quat[:, 1].pow(2) + quat[:, 2].pow(2))
         r_up = 0.15 * ((up_z + 1.0) / 2.0).pow(2)
 
-        # ── Anti yaw-spin ────────────────────────────────────────────────────
         omega_z = self._robot.data.root_ang_vel_b[:, 2]
         r_spin  = 0.05 / (1.0 + omega_z.pow(2))
 
-        # ── Effort penalty ───────────────────────────────────────────────────
         r_effort = -self.cfg.effort_weight * self._actions.pow(2).mean(dim=-1)
 
         total = r_progress + r_gate_pass + r_speed + (r_progress + 0.2) * (r_up + r_spin) + r_effort
 
-        # ── Crash override ───────────────────────────────────────────────────
         crash = (
             (pos_w[:, 2] < 0.3)
             | (pos_w[:, 2] > 10.0)
@@ -488,10 +384,6 @@ class DroneRacingEnv(DirectRLEnv):
         total = torch.where(crash, torch.full_like(total, self.cfg.crash_penalty), total)
 
         return total
-
-    # -----------------------------------------------------------------------
-    # Done conditions
-    # -----------------------------------------------------------------------
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         pos_w = self._robot.data.root_pos_w
@@ -506,15 +398,10 @@ class DroneRacingEnv(DirectRLEnv):
 
         return terminated, time_out
 
-    # -----------------------------------------------------------------------
-    # Reset
-    # -----------------------------------------------------------------------
-
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
-        # Flush episode logs
         extras = self.extras.setdefault("log", {})
         for key, buf in self._episode_sums.items():
             extras[f"Episode/{key}"] = (
@@ -524,7 +411,6 @@ class DroneRacingEnv(DirectRLEnv):
 
         super()._reset_idx(env_ids)
 
-        # Randomise episode offsets on a full reset to desynchronise envs
         if len(env_ids) == self.num_envs:
             self.episode_length_buf = torch.randint_like(
                 self.episode_length_buf, high=int(self.max_episode_length)
@@ -532,20 +418,14 @@ class DroneRacingEnv(DirectRLEnv):
 
         M = len(env_ids)
 
-        # ── Pick a random approach gate for each env ─────────────────────────
-        # Each drone spawns 2.5 m behind a random gate, facing it.
-        # This gives diverse start states and avoids overlapping with gate meshes.
         gate_start = torch.randint(0, _NUM_GATES, (M,), device=self.device)  # [M]
         gate_pos   = self._gate_center_pos[gate_start]     # [M, 3]
         gate_norm  = self._gate_world_normal[gate_start]  # [M, 3]
 
-        # 3.0 m behind = opposite direction of the normal.
-        # All inter-gate gaps are ≥ 3.6 m so this never overlaps with adjacent gates.
         noise       = torch.zeros(M, 3, device=self.device).uniform_(-0.2, 0.2)
         origins     = self.scene.env_origins[env_ids]     # [M, 3] — tiny with env_spacing=0.001
         spawn_pos_w = gate_pos - 3.0 * gate_norm + origins + noise
 
-        # Yaw aligned with gate direction so the drone faces the opening
         gate_yaws = torch.tensor(_GATE_YAWS, device=self.device)[gate_start]  # [M]
         roll  = torch.empty(M, device=self.device).uniform_(-0.05, 0.05) * math.pi
         pitch = torch.empty(M, device=self.device).uniform_(-0.05, 0.05) * math.pi
@@ -566,7 +446,6 @@ class DroneRacingEnv(DirectRLEnv):
 
         self._ctrl.reset(env_ids)
 
-        # ── Reset gate progress to the chosen approach gate ──────────────────
         self._gate_idx[env_ids] = gate_start
 
         diff0 = spawn_pos_w - gate_pos
@@ -574,16 +453,11 @@ class DroneRacingEnv(DirectRLEnv):
         self._prev_dist[env_ids]   = diff0.norm(dim=-1)
         self._steps_since_gate[env_ids] = 0.0
 
-        # ── Debug visualisation ──────────────────────────────────────────────
         if self.cfg.debug_vis and (env_ids == 0).any().item():
             self._draw_track()
             if not self._camera_initialised:
                 self._init_camera()
                 self._camera_initialised = True
-
-    # -----------------------------------------------------------------------
-    # Debug visualisation helpers
-    # -----------------------------------------------------------------------
 
     def _draw_track(self):
         """Draw the track circuit as green lines between consecutive gate centres."""
@@ -599,7 +473,6 @@ class DroneRacingEnv(DirectRLEnv):
         import numpy as np
         from isaacsim.core.utils.viewports import set_camera_view
 
-        # Look at the centroid of all gate positions
         center = self._gate_world_pos.mean(0).cpu().numpy()
         look_at = center.copy()
         eye     = look_at + np.array([0.0, -14.0, 10.0], dtype=np.float32)

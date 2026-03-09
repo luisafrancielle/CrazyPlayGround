@@ -69,17 +69,9 @@ from CrazyPlayGround.controllers import CascadePIDController, load_config
 
 from ..drone_racing.track_generator import spawn_track
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
 _DEFAULT_DRONE_CONFIG = str(
-    _pathlib.Path(__file__).resolve().parents[6] / "configs" / "crazyflie.yaml"
+    _pathlib.Path(__file__).resolve().parents[3] / "controllers" / "crazyflie.yaml"
 )
-
-# ---------------------------------------------------------------------------
-# Track definition — reuse from single-agent racing
-# ---------------------------------------------------------------------------
 
 _GATE_WORLD_POS: list[tuple[float, float, float]] = [
     ( 0.0, -5.0, 2.5),   # 0  start / finish
@@ -102,7 +94,6 @@ _GATE_CENTER_POS: list[tuple[float, float, float]] = [
     (x, y, z + _GATE_CENTER_Z_OFFSET) for x, y, z in _GATE_WORLD_POS
 ]
 
-
 def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
     normals = []
     n = len(positions)
@@ -114,7 +105,6 @@ def _build_normals(positions: list[tuple]) -> list[tuple[float, float, float]]:
         normals.append((dx / length, dy / length, dz / length))
     return normals
 
-
 _GATE_NORMALS: list[tuple[float, float, float]] = _build_normals(_GATE_CENTER_POS)
 _GATE_YAWS: list[float] = [math.atan2(n[1], n[0]) for n in _GATE_NORMALS]
 
@@ -123,27 +113,14 @@ _TRACK_CONFIG: dict = {
     for g in range(_NUM_GATES)
 }
 
-# ---------------------------------------------------------------------------
-# MARL agent names
-# ---------------------------------------------------------------------------
-
 _N = 2
 _AGENT_NAMES = ["blue", "red"]
 
-# Observation: quat(4) + lin_vel_b(3) + ang_vel_b(3) + curr_gate_b(3) +
-#              next_gate_b(3) + opp_pos_b(3) + opp_vel_b(3) + time_enc(4) = 26
 _OBS_DIM = 26
 
-# State: [pos(3) + quat(4) + lin_vel_b(3) + ang_vel_b(3)] × 2 + gate_idx(2) = 28
 _STATE_DIM = 28
 
-# Contact proxy threshold [m]
 _CONTACT_DIST = 0.15
-
-# ---------------------------------------------------------------------------
-# Configs
-# ---------------------------------------------------------------------------
-
 
 @configclass
 class DroneRacingMARLEnvCfg(DirectMARLEnvCfg):
@@ -153,21 +130,17 @@ class DroneRacingMARLEnvCfg(DirectMARLEnvCfg):
     decimation: int = 5
     debug_vis: bool = True
 
-    # MARL specification
     possible_agents: list = _AGENT_NAMES
     observation_spaces: dict = {a: _OBS_DIM for a in _AGENT_NAMES}
     state_space: int = _STATE_DIM
 
-    # Gate
     gate_radius: float = _GATE_RADIUS
 
-    # Dense reward weights (guide drones toward gates)
     progress_scale: float = 5.0          # approach reward per metre closed
     speed_bonus_scale: float = 0.5       # velocity toward gate
     uprightness_scale: float = 0.15      # staying level
     effort_weight: float = 0.001         # action magnitude penalty
 
-    # Sparse competitive reward weights
     gate_pass_reward_lead: float = 10.0
     gate_pass_reward_tie: float = 5.0
     lap_reward: float = 50.0
@@ -176,7 +149,6 @@ class DroneRacingMARLEnvCfg(DirectMARLEnvCfg):
     cmd_roll_pitch_weight: float = -0.15
     cmd_yaw_weight: float = -0.05
 
-    # Control (overridden in sub-configs)
     control_mode: str = "velocity"
     max_velocity: float = 4.0
     max_roll_pitch: float = 30.0 * math.pi / 180.0
@@ -196,13 +168,11 @@ class DroneRacingMARLEnvCfg(DirectMARLEnvCfg):
         ),
     )
 
-    # env_spacing ≈ 0 so all envs share one physical track
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=0.001, replicate_physics=True
     )
 
     drone_config_path: str = _DEFAULT_DRONE_CONFIG
-
 
 @configclass
 class VelDroneRacingMARLEnvCfg(DroneRacingMARLEnvCfg):
@@ -211,7 +181,6 @@ class VelDroneRacingMARLEnvCfg(DroneRacingMARLEnvCfg):
     action_spaces: dict = {a: 3 for a in _AGENT_NAMES}
     control_mode: str = "velocity"
 
-
 @configclass
 class AttDroneRacingMARLEnvCfg(DroneRacingMARLEnvCfg):
     """Attitude-controlled MARL racing.  Action = [roll, pitch, yaw_rate, thrust] per drone."""
@@ -219,26 +188,17 @@ class AttDroneRacingMARLEnvCfg(DroneRacingMARLEnvCfg):
     action_spaces: dict = {a: 4 for a in _AGENT_NAMES}
     control_mode: str = "attitude"
 
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
-
 class DroneRacingMARLEnv(DirectMARLEnv):
     cfg: DroneRacingMARLEnvCfg
 
     def __init__(self, cfg: DroneRacingMARLEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # Body IDs for thrust/torque application
         self._body_ids = [r.find_bodies("body")[0] for r in self._robots]
 
-        # Per-drone thrust/moment buffers
         self._thrust = [torch.zeros(self.num_envs, 1, 3, device=self.device) for _ in range(_N)]
         self._moment = [torch.zeros(self.num_envs, 1, 3, device=self.device) for _ in range(_N)]
 
-        # PID controllers (one per drone)
         drone_cfg = load_config(self.cfg.drone_config_path)
         self._ctrls = [
             CascadePIDController.from_drone_config(
@@ -250,12 +210,10 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             for _ in range(_N)
         ]
 
-        # Thrust limits (attitude mode)
         hover_thrust = drone_cfg.physics.mass * 9.81
         self._min_thrust = self.cfg.min_thrust_scale * hover_thrust
         self._max_thrust = self.cfg.max_thrust_scale * hover_thrust
 
-        # Mode-specific setpoint buffers
         if self.cfg.control_mode == "velocity":
             self._ref_vels = [
                 torch.zeros(self.num_envs, 3, device=self.device) for _ in range(_N)
@@ -271,7 +229,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 torch.zeros(self.num_envs, 1, device=self.device) for _ in range(_N)
             ]
 
-        # Gate geometry tensors — fixed world positions
         self._gate_center_pos = torch.tensor(
             _GATE_CENTER_POS, dtype=torch.float32, device=self.device
         )  # [G, 3]
@@ -279,24 +236,20 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             _GATE_NORMALS, dtype=torch.float32, device=self.device
         )  # [G, 3]
 
-        # Per-drone gate progress: [E, 2]
         self._gate_idx = torch.zeros(self.num_envs, _N, dtype=torch.long, device=self.device)
         self._lap_count = torch.zeros(self.num_envs, _N, dtype=torch.long, device=self.device)
         self._prev_signed = torch.zeros(self.num_envs, _N, device=self.device)
         self._prev_dist = torch.zeros(self.num_envs, _N, device=self.device)
         self._steps_since_gate = torch.zeros(self.num_envs, _N, device=self.device)
 
-        # Action buffer for effort penalty
         self._actions = {a: torch.zeros(self.num_envs, self.cfg.action_spaces[a], device=self.device)
                          for a in self.cfg.possible_agents}
 
-        # Episode logging
         self._episode_sums = {
             k: torch.zeros(self.num_envs, device=self.device)
             for k in ["gates_blue", "gates_red", "laps_blue", "laps_red", "progress"]
         }
 
-        # Debug draw
         import omni.kit.app
         _ext_mgr = omni.kit.app.get_app().get_extension_manager()
         if not _ext_mgr.is_extension_enabled("isaacsim.util.debug_draw"):
@@ -305,13 +258,8 @@ class DroneRacingMARLEnv(DirectMARLEnv):
         self._draw = _debug_draw.acquire_debug_draw_interface()
         self._camera_initialised = False
 
-        # Activate debug visualisation (markers + callback) if configured
         if self.cfg.debug_vis:
             self.set_debug_vis(True)
-
-    # -----------------------------------------------------------------------
-    # Scene setup
-    # -----------------------------------------------------------------------
 
     def _setup_scene(self):
         self._robots: list[Articulation] = []
@@ -321,7 +269,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             )
             self._robots.append(robot)
 
-        # Spawn ONE shared track
         spawn_track(_TRACK_CONFIG)
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -335,10 +282,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    # -----------------------------------------------------------------------
-    # Physics step
-    # -----------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         for i, agent in enumerate(self.cfg.possible_agents):
@@ -394,10 +337,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 self._thrust[i], self._moment[i], body_ids=self._body_ids[i]
             )
 
-    # -----------------------------------------------------------------------
-    # Gate crossing detection (per-drone)
-    # -----------------------------------------------------------------------
-
     def _detect_gate_crossings(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Detect gate crossings for each drone independently.
 
@@ -418,11 +357,9 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             diff = pos_w - curr_gate_w
             signed = torch.sum(diff * gate_normal, dim=-1)  # [E]
 
-            # In-plane distance
             lateral = diff - signed.unsqueeze(-1) * gate_normal
             planar = torch.norm(lateral, dim=-1)
 
-            # Crossing: sign flipped forward AND within gate radius
             cross_i = (
                 (self._prev_signed[:, i] <= 0.0)
                 & (signed > 0.0)
@@ -433,12 +370,10 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             if cross_i.any():
                 old_idx = gate_idx_i[cross_i]
                 new_idx = (old_idx + 1) % _NUM_GATES
-                # Lap completed when wrapping from gate 9 → gate 0
                 lap_completed[cross_i, i] = (new_idx < old_idx)
                 self._gate_idx[cross_i, i] = new_idx
                 self._lap_count[cross_i, i] += lap_completed[cross_i, i].long()
 
-            # Update prev_signed for next step (relative to current/new gate)
             new_gate_w = self._gate_center_pos[self._gate_idx[:, i]]
             new_normal = self._gate_world_normal[self._gate_idx[:, i]]
             new_diff = pos_w - new_gate_w
@@ -453,10 +388,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
         """
         return self._lap_count * _NUM_GATES + self._gate_idx
 
-    # -----------------------------------------------------------------------
-    # Observations
-    # -----------------------------------------------------------------------
-
     def _get_observations(self) -> dict[str, torch.Tensor]:
         positions = [r.data.root_pos_w for r in self._robots]       # list of [E, 3]
         quats = [r.data.root_quat_w for r in self._robots]          # list of [E, 4]
@@ -464,7 +395,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
         ang_vels_b = [r.data.root_ang_vel_b for r in self._robots]  # list of [E, 3]
         lin_vels_w = [r.data.root_lin_vel_w for r in self._robots]  # list of [E, 3]
 
-        # Time encoding
         t = (self.episode_length_buf / self.max_episode_length).unsqueeze(-1)  # [E, 1]
         time_enc = t.expand(-1, 4)  # [E, 4]
 
@@ -473,16 +403,13 @@ class DroneRacingMARLEnv(DirectMARLEnv):
         for i, agent in enumerate(self.cfg.possible_agents):
             j = 1 - i  # opponent index
 
-            # Gate positions in body frame
             curr_gate_w = self._gate_center_pos[self._gate_idx[:, i]]
             next_gate_w = self._gate_center_pos[(self._gate_idx[:, i] + 1) % _NUM_GATES]
             curr_gate_b, _ = subtract_frame_transforms(positions[i], quats[i], curr_gate_w)
             next_gate_b, _ = subtract_frame_transforms(positions[i], quats[i], next_gate_w)
 
-            # Opponent position in body frame
             opp_pos_b, _ = subtract_frame_transforms(positions[i], quats[i], positions[j])
 
-            # Opponent velocity in body frame (rotate world-frame velocity)
             opp_vel_b = quat_apply_inverse(quats[i], lin_vels_w[j])
 
             obs[agent] = torch.cat(
@@ -511,20 +438,13 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 r.data.root_lin_vel_b,   # 3
                 r.data.root_ang_vel_b,   # 3
             ])
-        # Normalised gate indices for both drones
         gate_idx_norm = self._gate_idx.float() / _NUM_GATES  # [E, 2]
         parts.append(gate_idx_norm)
         return torch.cat(parts, dim=-1)  # [E, 28]
 
-    # -----------------------------------------------------------------------
-    # Rewards
-    # -----------------------------------------------------------------------
-
     def _get_rewards(self) -> dict[str, torch.Tensor]:
-        # Detect gate crossings (updates _gate_idx, _prev_signed, etc.)
         crossed, lap_completed = self._detect_gate_crossings()
 
-        # Progress scores for lead comparison
         progress = self._get_progress_score()  # [E, 2]
 
         rewards: dict[str, torch.Tensor] = {}
@@ -533,7 +453,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             j = 1 - i  # opponent index
             pos_w = self._robots[i].data.root_pos_w  # [E, 3]
 
-            # ── Dense: progress reward (approach current gate) ─────────────
             curr_gate_w = self._gate_center_pos[self._gate_idx[:, i]]  # [E, 3]
             diff = pos_w - curr_gate_w
             curr_dist = diff.norm(dim=-1)
@@ -541,21 +460,17 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             self._prev_dist[:, i] = curr_dist.detach().clone()
             self._episode_sums["progress"] += r_progress.clamp(min=0.0)
 
-            # ── Dense: speed bonus (velocity toward gate) ──────────────────
             lin_vel_w = self._robots[i].data.root_lin_vel_w  # [E, 3]
             to_gate = -diff / (curr_dist.unsqueeze(-1) + 1e-6)  # unit vec toward gate
             speed_toward = torch.sum(lin_vel_w * to_gate, dim=-1).clamp(min=0.0)
             r_speed = self.cfg.speed_bonus_scale * speed_toward
 
-            # ── Dense: uprightness ─────────────────────────────────────────
             quat = self._robots[i].data.root_quat_w
             up_z = 1.0 - 2.0 * (quat[:, 1].pow(2) + quat[:, 2].pow(2))
             r_up = self.cfg.uprightness_scale * ((up_z + 1.0) / 2.0).pow(2)
 
-            # ── Dense: effort penalty ──────────────────────────────────────
             r_effort = -self.cfg.effort_weight * self._actions[agent].pow(2).mean(dim=-1)
 
-            # ── Sparse: gate pass (competitive) ───────────────────────────
             self._steps_since_gate[:, i] += 1.0
             time_bonus = torch.exp(-self._steps_since_gate[:, i] / 200.0)
             r_gate = torch.zeros(self.num_envs, device=self.device)
@@ -568,14 +483,12 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 gate_r = torch.zeros(mask.sum(), device=self.device)
                 gate_r[leading] = self.cfg.gate_pass_reward_lead
                 gate_r[tied] = self.cfg.gate_pass_reward_tie
-                # Time-decaying bonus: faster crossing = bigger reward
                 gate_r = gate_r * (1.0 + time_bonus[mask])
                 r_gate[mask] = gate_r
 
                 self._steps_since_gate[mask, i] = 0.0
                 self._episode_sums[f"gates_{agent}"][mask] += 1.0
 
-            # ── Sparse: lap completion ─────────────────────────────────────
             r_lap = torch.zeros(self.num_envs, device=self.device)
             if lap_completed[:, i].any():
                 mask = lap_completed[:, i]
@@ -585,14 +498,12 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 r_lap[mask] = lap_r
                 self._episode_sums[f"laps_{agent}"][mask] += 1.0
 
-            # ── Dense: command energy regularisation ───────────────────────
             ang_vel = self._robots[i].data.root_ang_vel_b  # [E, 3]
             r_cmd = (
                 self.cfg.cmd_roll_pitch_weight * (ang_vel[:, 0].pow(2) + ang_vel[:, 1].pow(2))
                 + self.cfg.cmd_yaw_weight * ang_vel[:, 2].pow(2)
             )
 
-            # ── Sparse: contact penalty ────────────────────────────────────
             inter_dist = (pos_w - self._robots[j].data.root_pos_w).norm(dim=-1)
             r_contact = torch.where(
                 inter_dist < _CONTACT_DIST,
@@ -600,14 +511,12 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 torch.zeros_like(inter_dist),
             )
 
-            # ── Combine ───────────────────────────────────────────────────
             total = (
                 r_progress + r_gate + r_lap + r_speed
                 + (r_progress + 0.2) * r_up  # uprightness scaled by progress
                 + r_effort + r_cmd + r_contact
             )
 
-            # ── Crash override ─────────────────────────────────────────────
             crash = (
                 (pos_w[:, 2] < 0.3)
                 | (pos_w[:, 2] > 10.0)
@@ -620,12 +529,7 @@ class DroneRacingMARLEnv(DirectMARLEnv):
 
         return rewards
 
-    # -----------------------------------------------------------------------
-    # Dones
-    # -----------------------------------------------------------------------
-
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        # Any drone crash terminates the entire env for both agents
         terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for robot in self._robots:
             pos_w = robot.data.root_pos_w
@@ -643,15 +547,10 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             {a: time_out for a in self.cfg.possible_agents},
         )
 
-    # -----------------------------------------------------------------------
-    # Reset
-    # -----------------------------------------------------------------------
-
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robots[0]._ALL_INDICES
 
-        # Flush episode logs
         extras = self.extras.setdefault("log", {})
         for key, buf in self._episode_sums.items():
             extras[f"Episode/{key}"] = (
@@ -661,7 +560,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
 
         super()._reset_idx(env_ids)
 
-        # Randomise episode offsets on full reset
         if len(env_ids) == self.num_envs:
             self.episode_length_buf = torch.randint_like(
                 self.episode_length_buf, high=int(self.max_episode_length)
@@ -669,12 +567,10 @@ class DroneRacingMARLEnv(DirectMARLEnv):
 
         M = len(env_ids)
 
-        # ── Pick a random approach gate ──────────────────────────────────
         gate_start = torch.randint(0, _NUM_GATES, (M,), device=self.device)
         gate_pos = self._gate_center_pos[gate_start]      # [M, 3]
         gate_norm = self._gate_world_normal[gate_start]    # [M, 3]
 
-        # Compute a lateral vector perpendicular to gate normal (in XY plane)
         lateral_dir = torch.stack([-gate_norm[:, 1], gate_norm[:, 0], torch.zeros(M, device=self.device)], dim=-1)
         lateral_dir = lateral_dir / (lateral_dir.norm(dim=-1, keepdim=True) + 1e-6)
 
@@ -682,12 +578,10 @@ class DroneRacingMARLEnv(DirectMARLEnv):
         gate_yaws = torch.tensor(_GATE_YAWS, device=self.device)[gate_start]
 
         for i, robot in enumerate(self._robots):
-            # Lateral offset: ±0.4 m side-by-side
             offset = 0.4 if i == 0 else -0.4
             noise = torch.zeros(M, 3, device=self.device).uniform_(-0.15, 0.15)
             spawn_pos_w = gate_pos - 3.0 * gate_norm + origins + offset * lateral_dir + noise
 
-            # Yaw aligned with gate
             roll = torch.empty(M, device=self.device).uniform_(-0.05, 0.05) * math.pi
             pitch = torch.empty(M, device=self.device).uniform_(-0.05, 0.05) * math.pi
             yaw = gate_yaws + torch.empty(M, device=self.device).uniform_(-0.1, 0.1) * math.pi
@@ -707,11 +601,9 @@ class DroneRacingMARLEnv(DirectMARLEnv):
 
             self._ctrls[i].reset(env_ids)
 
-        # Reset gate progress — both drones start at the same gate
         self._gate_idx[env_ids, :] = gate_start.unsqueeze(-1).expand(-1, _N)
         self._lap_count[env_ids, :] = 0
 
-        # Reset prev_signed and prev_dist for both drones
         for i, robot in enumerate(self._robots):
             pos_w = robot.data.root_pos_w[env_ids]
             g_pos = self._gate_center_pos[self._gate_idx[env_ids, i]]
@@ -721,16 +613,11 @@ class DroneRacingMARLEnv(DirectMARLEnv):
             self._prev_dist[env_ids, i] = diff.norm(dim=-1)
         self._steps_since_gate[env_ids, :] = 0.0
 
-        # Debug visualisation
         if self.cfg.debug_vis and (env_ids == 0).any().item():
             self._draw_track()
             if not self._camera_initialised:
                 self._init_camera()
                 self._camera_initialised = True
-
-    # -----------------------------------------------------------------------
-    # Debug visualisation
-    # -----------------------------------------------------------------------
 
     def _draw_track(self):
         """Draw the track circuit as green lines between consecutive gate centres."""
@@ -755,7 +642,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if not hasattr(self, "_blue_marker"):
-                # Blue team marker — bright blue sphere
                 blue_cfg = VisualizationMarkersCfg(
                     prim_path="/Visuals/TeamMarker/blue",
                     markers={
@@ -770,7 +656,6 @@ class DroneRacingMARLEnv(DirectMARLEnv):
                 )
                 self._blue_marker = VisualizationMarkers(blue_cfg)
 
-                # Red team marker — bright red sphere
                 red_cfg = VisualizationMarkersCfg(
                     prim_path="/Visuals/TeamMarker/red",
                     markers={

@@ -8,9 +8,9 @@
 
 ---
 
-# CrazyPlayGround - Collection of CrazyFlie Environments 
+# CrazyPlayGround - Collection of CrazyFlie Environments
 
-A collection of Crazyflie reinforcement learning environments built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab), using a cascaded PID inner-loop controller from [DroneModule](https://github.com/JulienHansen/DroneModule).
+A collection of Crazyflie reinforcement learning environments built on [Isaac Lab](https://isaac-sim.github.io/IsaacLab), using a self-contained cascaded PID inner-loop controller.
 
 ---
 
@@ -87,7 +87,6 @@ Episode terminates when the drone goes below 0.1 m or above 2.0 m.
 ## Dependencies
 
 - [Isaac Lab](https://isaac-sim.github.io/IsaacLab) (Isaac Sim 4.5+)
-- [DroneModule](https://github.com/JulienHansen/DroneModule) — cascade PID controller and Crazyflie YAML config
 
 ---
 
@@ -95,19 +94,13 @@ Episode terminates when the drone goes below 0.1 m or above 2.0 m.
 
 **1. Install Isaac Lab** following the [official guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
 
-**2. Install DroneModule** (editable):
-
-```bash
-pip install -e /path/to/DroneModule
-```
-
-**3. Install CrazyPlayGround** (editable):
+**2. Install CrazyPlayGround** (editable):
 
 ```bash
 pip install -e source/CrazyPlayGround
 ```
 
-**4. Verify** — list available environments:
+**3. Verify** — list available environments:
 
 ```bash
 python scripts/list_envs.py
@@ -141,10 +134,7 @@ python scripts/skrl/play.py --task=Vel-Hovering --num_envs=16
 ### Debug with dummy agents
 
 ```bash
-# Zero-action agent (checks physics stability)
 python scripts/zero_agent.py --task=Vel-Hovering
-
-# Random-action agent (checks environment bounds)
 python scripts/random_agent.py --task=Vel-Hovering
 ```
 
@@ -155,39 +145,47 @@ python scripts/random_agent.py --task=Vel-Hovering
 ```
 CrazyPlayGround/
 ├── source/CrazyPlayGround/CrazyPlayGround/
+│   ├── controllers/                    # Self-contained cascade PID controller
+│   │   ├── cascade_pid.py
+│   │   ├── pid.py
+│   │   ├── config.py
+│   │   ├── crazyflie.yaml              # PID gains & physics params
+│   │   └── utils/math_utils.py
 │   └── tasks/direct/
-│       ├── hovering/               # Single-drone envs
-│       │   ├── pos_hovering.py     # Position-delta control
-│       │   ├── vel_hovering.py     # Velocity-reference control
-│       │   ├── att_hovering.py     # Attitude control
-│       │   └── agents/             # RL agent configs (skrl, sb3, rsl_rl…)
-│       └── crazyplayground_marl/   # Multi-agent env
-├── scripts/
-│   ├── skrl/                       # SKRL train & play scripts
-│   ├── rsl_rl/
-│   ├── sb3/
-│   ├── rl_games/
-│   ├── list_envs.py
-│   ├── zero_agent.py
-│   └── random_agent.py
-└── DroneModule/configs/crazyflie.yaml   # PID gains & physics params
+│       ├── hovering/                   # Single-drone envs
+│       │   ├── pos_hovering.py
+│       │   ├── vel_hovering.py
+│       │   ├── att_hovering.py
+│       │   └── agents/
+│       ├── track/
+│       ├── drone_racing/
+│       ├── drone_racing_marl/
+│       ├── formation/
+│       ├── fly_through/
+│       └── teleoperation/
+└── scripts/
+    ├── skrl/
+    ├── rsl_rl/
+    ├── sb3/
+    └── random_agent.py
 ```
 
 ---
 
 ## Configuration
 
-PID gains and simulation parameters are centralized in `DroneModule/configs/crazyflie.yaml` under the `crazyflie_pid` section. Key parameters:
+PID gains and simulation parameters are in `source/CrazyPlayGround/CrazyPlayGround/controllers/crazyflie.yaml` under the `controllers.cascade_pid` section. Key parameters:
 
 ```yaml
-crazyflie_pid:
-  sim_rate_hz:            500.0   # Must match physics dt
-  pid_posvel_loop_rate_hz: 100.0
-  pid_loop_rate_hz:        500.0
-  gyro_lpf_cutoff_hz:       20.0  # Gyro low-pass filter cutoff
+controllers:
+  cascade_pid:
+    sim_rate_hz:             500.0
+    pid_posvel_loop_rate_hz: 100.0
+    pid_loop_rate_hz:        500.0
+    gyro_lpf_cutoff_hz:       20.0
 
-  pos_kp:  [2.0, 2.0, 2.0]
-  vel_kp:  [25.0, 25.0, 25.0]    # x/y in deg/(m/s), internally ×DEG2RAD
-  att_kp:  [6.0, 6.0, 6.0]
-  rate_kp: [250.0, 250.0, 120.0]
+    pos_kp:  [2.0, 2.0, 2.0]
+    vel_kp:  [25.0, 25.0, 25.0]
+    att_kp:  [6.0, 6.0, 6.0]
+    rate_kp: [250.0, 250.0, 120.0]
 ```
