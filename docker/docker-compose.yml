@@ -71,3 +71,18 @@ services:
       --task=${TASK:-Att-Hovering}
       --num_envs=${NUM_ENVS:-512}
       ${HEADLESS:-}
+
+  # ── Play / video ─────────────────────────────────────────────────────────────
+
+  play-skrl:
+    extends: crazyplayground
+    container_name: crazyplayground-play-skrl
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    command: >
+      /workspace/isaaclab/isaaclab.sh -p
+      /workspace/CrazyPlayGround/scripts/skrl/play.py
+      --task=${TASK:-Vel-Hovering}
+      --num_envs=${PLAY_NUM_ENVS:-16}
+      --video
+      --video_length=${VIDEO_LENGTH:-200}
+      --checkpoint=${CHECKPOINT:-}
