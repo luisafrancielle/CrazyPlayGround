@@ -72,10 +72,8 @@ agent:
     write_interval: auto
     checkpoint_interval: auto
     
-    wandb: True,             # whether to use Weights & Biases
-    wandb_kwargs:
-      project: "KTHxUlg"       # Can be changed to whatever project you want
-      entity: "hansenjulienpro-univesity-of-liege"   # your wandb username or team name
+    wandb: True             # whether to use Weights & Biases
+    wandb_kwargs: {}
       
       
 # Sequential trainer

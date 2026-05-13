@@ -73,9 +73,7 @@ agent:
     checkpoint_interval: auto
 
     wandb: True
-    wandb_kwargs:
-      project: "KTHxUlg"
-      entity: "hansenjulienpro-univesity-of-liege"
+    wandb_kwargs: {}
 
 
 # Sequential trainer

@@ -28,6 +28,9 @@ runs/
 # Weights & Biases
 wandb/
 
+# Docker secrets — never commit credentials
+docker/.env
+
 # Model checkpoints
 *.pt
 *.pth
